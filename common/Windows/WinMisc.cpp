@@ -19,12 +19,34 @@
 #include "common/RedtapeWindows.h"
 #include "common/Exceptions.h"
 #include "common/StringUtil.h"
+#include "common/Threading.h"
+#include "common/General.h"
+#include "common/WindowInfo.h"
 
 #include "fmt/core.h"
 
-#pragma comment(lib, "User32.lib")
+#include <mmsystem.h>
+#include <timeapi.h>
+#include <VersionHelpers.h>
 
 alignas(16) static LARGE_INTEGER lfreq;
+
+// This gets leaked... oh well.
+static thread_local HANDLE s_sleep_timer;
+static thread_local bool s_sleep_timer_created = false;
+
+static HANDLE GetSleepTimer()
+{
+	if (s_sleep_timer_created)
+		return s_sleep_timer;
+
+	s_sleep_timer_created = true;
+	s_sleep_timer = CreateWaitableTimerEx(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+	if (!s_sleep_timer)
+		s_sleep_timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+
+	return s_sleep_timer;
+}
 
 void InitCPUTicks()
 {
@@ -60,60 +82,61 @@ std::string GetOSVersionString()
 	SYSTEM_INFO si;
 	GetNativeSystemInfo(&si);
 
-	if (!IsWindows8Point1OrGreater())
-	{
-		retval = "Unsupported Operating System!";
-	}
-	else
+	if (IsWindows10OrGreater())
 	{
 		retval = "Microsoft ";
-
-		if (IsWindows10OrGreater())
-			retval += IsWindowsServer() ? "Windows Server 2016" : "Windows 10";
-		else // IsWindows8Point1OrGreater()
-			retval += IsWindowsServer() ? "Windows Server 2012 R2" : "Windows 8.1";
+		retval += IsWindowsServer() ? "Windows Server 2016+" : "Windows 10+";
+		
 	}
+	else
+		retval = "Unsupported Operating System!";
 
 	return retval;
 }
 
-// --------------------------------------------------------------------------------------
-//  Exception::WinApiError   (implementations)
-// --------------------------------------------------------------------------------------
-Exception::WinApiError::WinApiError()
-{
-	ErrorId = GetLastError();
-	m_message_diag = "Unspecified Windows API error.";
-}
-
-std::string Exception::WinApiError::GetMsgFromWindows() const
-{
-	if (!ErrorId)
-		return "No valid error number was assigned to this exception!";
-
-	const DWORD BUF_LEN = 2048;
-	wchar_t t_Msg[BUF_LEN];
-	if (FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM, 0, ErrorId, 0, t_Msg, BUF_LEN, 0))
-		return fmt::format("Win32 Error #{}: {}", ErrorId, StringUtil::WideStringToUTF8String(t_Msg));
-
-	return fmt::format("Win32 Error #{} (no text msg available)", ErrorId);
-}
-
-std::string Exception::WinApiError::FormatDisplayMessage() const
-{
-	return m_message_user + "\n\n" + GetMsgFromWindows();
-}
-
-std::string Exception::WinApiError::FormatDiagnosticMessage() const
-{
-	return m_message_diag + "\n\t" + GetMsgFromWindows();
-}
-
-void ScreensaverAllow(bool allow)
+bool WindowInfo::InhibitScreensaver(const WindowInfo& wi, bool inhibit)
 {
 	EXECUTION_STATE flags = ES_CONTINUOUS;
-	if (!allow)
+	if (inhibit)
 		flags |= ES_DISPLAY_REQUIRED;
 	SetThreadExecutionState(flags);
+	return true;
 }
+
+bool Common::PlaySoundAsync(const char* path)
+{
+	const std::wstring wpath(StringUtil::UTF8StringToWideString(path));
+	return PlaySoundW(wpath.c_str(), NULL, SND_ASYNC | SND_NODEFAULT);
+}
+
+void Threading::Sleep(int ms)
+{
+	::Sleep(ms);
+}
+
+void Threading::SleepUntil(u64 ticks)
+{
+	// This is definitely sub-optimal, but there's no way to sleep until a QPC timestamp on Win32.
+	const s64 diff = static_cast<s64>(ticks - GetCPUTicks());
+	if (diff <= 0)
+		return;
+
+	const HANDLE hTimer = GetSleepTimer();
+	if (!hTimer)
+		return;
+
+	const u64 one_hundred_nanos_diff = (static_cast<u64>(diff) * 10000000ULL) / GetTickFrequency();
+	if (one_hundred_nanos_diff == 0)
+		return;
+
+	LARGE_INTEGER fti;
+	fti.QuadPart = -static_cast<s64>(one_hundred_nanos_diff);
+
+	if (SetWaitableTimer(hTimer, &fti, 0, nullptr, nullptr, FALSE))
+	{
+		WaitForSingleObject(hTimer, INFINITE);
+		return;
+	}
+}
+
 #endif

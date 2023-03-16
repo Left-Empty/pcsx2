@@ -22,6 +22,7 @@
 
 class QNetworkAccessManager;
 class QNetworkReply;
+class QProgressDialog;
 
 class AutoUpdaterDialog final : public QDialog
 {
@@ -58,11 +59,9 @@ private:
 	void checkIfUpdateNeeded();
 	QString getCurrentUpdateTag() const;
 
-#ifdef _WIN32
-	bool processUpdate(const QByteArray& update_data);
+	bool processUpdate(const QByteArray& update_data, QProgressDialog& progress);
+#if defined(_WIN32)
 	bool doUpdate(const QString& zip_path, const QString& updater_path, const QString& destination_path);
-#else
-	bool processUpdate(const QByteArray& update_data);
 #endif
 
 	Ui::AutoUpdaterDialog m_ui;

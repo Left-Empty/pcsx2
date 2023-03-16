@@ -10,25 +10,31 @@ add_library(common)
 # x86emitter sources
 target_sources(common PRIVATE
 	AlignedMalloc.cpp
-	VirtualMemory.cpp
-	EventSource.inl
 	SafeArray.inl
 	Console.cpp
 	CrashHandler.cpp
-	EventSource.cpp
+	DynamicLibrary.cpp
 	Exceptions.cpp
 	FastJmp.cpp
 	FileSystem.cpp
+	General.cpp
+	Image.cpp
+	HTTPDownloader.cpp
+	MemorySettingsInterface.cpp
 	Misc.cpp
 	MD5Digest.cpp
 	PrecompiledHeader.cpp
 	Perf.cpp
 	ProgressCallback.cpp
+	ReadbackSpinManager.cpp
 	Semaphore.cpp
 	SettingsWrapper.cpp
 	StringUtil.cpp
 	Timer.cpp
+	ThreadPool.cpp
+	WAVWriter.cpp
 	WindowInfo.cpp
+	emitter/avx.cpp
 	emitter/bmi.cpp
 	emitter/cpudetect.cpp
 	emitter/fpu.cpp
@@ -60,22 +66,29 @@ target_sources(common PRIVATE
 	boost_spsc_queue.hpp
 	Console.h
 	CrashHandler.h
+	DynamicLibrary.h
+	Easing.h
 	EnumOps.h
-	EventSource.h
 	Exceptions.h
 	FastJmp.h
 	FileSystem.h
 	General.h
 	HashCombine.h
+	HeterogeneousContainers.h
+	Image.h
 	LRUCache.h
+	HeapArray.h
+	HTTPDownloader.h
 	MemcpyFast.h
+	MemorySettingsInterface.h
 	MemsetFast.inl
 	MD5Digest.h
 	MRCHelpers.h
 	Path.h
-	PageFaultSource.h
 	PrecompiledHeader.h
 	ProgressCallback.h
+	ReadbackSpinManager.h
+	RedtapeWilCom.h
 	RedtapeWindows.h
 	SafeArray.h
 	ScopedGuard.h
@@ -84,7 +97,9 @@ target_sources(common PRIVATE
 	StringUtil.h
 	Timer.h
 	Threading.h
+	ThreadPool.h
 	TraceLog.h
+	WAVWriter.h
 	WindowInfo.h
 	emitter/cpudetect_internal.h
 	emitter/implement/dwshift.h
@@ -164,11 +179,13 @@ endif()
 if(WIN32)
 	enable_language(ASM_MASM)
 	target_sources(common PRIVATE FastJmp.asm)
-	target_link_libraries(common PUBLIC WIL::WIL D3D12MemAlloc Winmm.lib)
+	target_link_libraries(common PUBLIC WIL::WIL D3D12MemAlloc winmm)
 	target_sources(common PRIVATE
 		CrashHandler.cpp
 		CrashHandler.h
 		FastJmp.asm
+		HTTPDownloaderWinHTTP.cpp
+		HTTPDownloaderWinHTTP.h
 		StackWalker.cpp
 		StackWalker.h
 		D3D11/ShaderCache.cpp
@@ -262,12 +279,24 @@ if (USE_GCC AND CMAKE_INTERPROCEDURAL_OPTIMIZATION)
 	set_source_files_properties(FastJmp.cpp PROPERTIES COMPILE_FLAGS -fno-lto)
 endif()
 
+if(NOT WIN32 AND (QT_BUILD OR NOGUI_BUILD))
+	# libcurl-based HTTPDownloader
+	target_sources(common PRIVATE
+		HTTPDownloaderCurl.cpp
+		HTTPDownloaderCurl.h
+	)
+	target_link_libraries(common PRIVATE CURL::libcurl)
+endif()
+
 target_link_libraries(common PRIVATE
 	${LIBC_LIBRARIES}
+	PNG::PNG
+	jpgd
 )
 
 target_link_libraries(common PUBLIC
 	fmt::fmt
+	fast_float
 )
 
 fixup_file_properties(common)

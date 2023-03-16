@@ -15,20 +15,13 @@
 
 #pragma once
 
-#include "GS.h"
+#include "GS/GS.h"
 #include "GS/Renderers/Common/GSTexture.h"
 #include "common/D3D12/Context.h"
 #include "common/D3D12/Texture.h"
 
 class GSTexture12 final : public GSTexture
 {
-public:
-	union alignas(16) ClearValue
-	{
-		float color[4];
-		float depth;
-	};
-
 public:
 	GSTexture12(Type type, Format format, D3D12::Texture texture);
 	~GSTexture12() override;
@@ -38,12 +31,10 @@ public:
 
 	__fi D3D12::Texture& GetTexture() { return m_texture; }
 	__fi const D3D12::DescriptorHandle& GetSRVDescriptor() const { return m_texture.GetSRVDescriptor(); }
-	__fi const D3D12::DescriptorHandle& GetRTVOrDSVHandle() const { return m_texture.GetRTVOrDSVDescriptor(); }
+	__fi const D3D12::DescriptorHandle& GetRTVOrDSVHandle() const { return m_texture.GetWriteDescriptor(); }
 	__fi D3D12_RESOURCE_STATES GetResourceState() const { return m_texture.GetState(); }
 	__fi DXGI_FORMAT GetNativeFormat() const { return m_texture.GetFormat(); }
 	__fi ID3D12Resource* GetResource() const { return m_texture.GetResource(); }
-	__fi GSVector4 GetClearColor() const { return GSVector4::load<true>(m_clear_value.color); }
-	__fi float GetClearDepth() const { return m_clear_value.depth; }
 
 	void* GetNativeHandle() const override;
 
@@ -56,17 +47,6 @@ public:
 	void TransitionToState(D3D12_RESOURCE_STATES state);
 	void CommitClear();
 	void CommitClear(ID3D12GraphicsCommandList* cmdlist);
-
-	__fi void SetClearColor(const GSVector4& color)
-	{
-		m_state = State::Cleared;
-		GSVector4::store<true>(m_clear_value.color, color);
-	}
-	__fi void SetClearDepth(float depth)
-	{
-		m_state = State::Cleared;
-		m_clear_value.depth = depth;
-	}
 
 	// Call when the texture is bound to the pipeline, or read from in a copy.
 	__fi void SetUsedThisCommandBuffer()
@@ -85,8 +65,30 @@ private:
 	// When this matches the current fence counter, the texture was used this command buffer.
 	u64 m_use_fence_counter = 0;
 
-	ClearValue m_clear_value = {};
-
 	GSVector4i m_map_area = GSVector4i::zero();
 	u32 m_map_level = UINT32_MAX;
+};
+
+class GSDownloadTexture12 final : public GSDownloadTexture
+{
+public:
+	~GSDownloadTexture12() override;
+
+	static std::unique_ptr<GSDownloadTexture12> Create(u32 width, u32 height, GSTexture::Format format);
+
+	void CopyFromTexture(const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch) override;
+
+	bool Map(const GSVector4i& read_rc) override;
+	void Unmap() override;
+
+	void Flush() override;
+
+private:
+	GSDownloadTexture12(u32 width, u32 height, GSTexture::Format format);
+
+	wil::com_ptr_nothrow<D3D12MA::Allocation> m_allocation;
+	wil::com_ptr_nothrow<ID3D12Resource> m_buffer;
+
+	u64 m_copy_fence_value = 0;
+	u32 m_buffer_size = 0;
 };

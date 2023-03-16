@@ -16,15 +16,20 @@
 #include "PrecompiledHeader.h"
 
 #include "HostDisplay.h"
+#include "VMManager.h"
+
 #include "common/Assertions.h"
 #include "common/Console.h"
 #include "common/StringUtil.h"
+
 #include <cerrno>
 #include <cmath>
 #include <cstring>
 #include <chrono>
 #include <thread>
 #include <vector>
+
+std::unique_ptr<HostDisplay> g_host_display;
 
 HostDisplayTexture::~HostDisplayTexture() = default;
 
@@ -126,6 +131,18 @@ std::string HostDisplay::GetFullscreenModeString(u32 width, u32 height, float re
 	return StringUtil::StdStringFromFormat("%u x %u @ %f hz", width, height, refresh_rate);
 }
 
+VsyncMode Host::GetEffectiveVSyncMode()
+{
+	const bool has_vm = VMManager::GetState() != VMState::Shutdown;
+
+	// Force vsync off when not running at 100% speed.
+	if (has_vm && EmuConfig.GS.LimitScalar != 1.0f)
+		return VsyncMode::Off;
+
+	// Otherwise use the config setting.
+	return EmuConfig.GS.VsyncEnable;
+}
+
 #ifdef ENABLE_OPENGL
 #include "Frontend/OpenGLHostDisplay.h"
 #endif
@@ -140,7 +157,7 @@ std::string HostDisplay::GetFullscreenModeString(u32 width, u32 height, float re
 #endif
 #include "GS/Renderers/Metal/GSMetalCPPAccessible.h"
 
-std::unique_ptr<HostDisplay> HostDisplay::CreateDisplayForAPI(RenderAPI api)
+std::unique_ptr<HostDisplay> HostDisplay::CreateForAPI(RenderAPI api)
 {
 	switch (api)
 	{
@@ -151,7 +168,7 @@ std::unique_ptr<HostDisplay> HostDisplay::CreateDisplayForAPI(RenderAPI api)
 			return std::make_unique<D3D12HostDisplay>();
 #endif
 #ifdef __APPLE__
-		case HostDisplay::RenderAPI::Metal:
+		case RenderAPI::Metal:
 			return std::unique_ptr<HostDisplay>(MakeMetalHostDisplay());
 #endif
 
@@ -171,4 +188,3 @@ std::unique_ptr<HostDisplay> HostDisplay::CreateDisplayForAPI(RenderAPI api)
 			return {};
 	}
 }
-

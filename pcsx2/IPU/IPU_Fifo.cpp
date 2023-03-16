@@ -15,9 +15,9 @@
 
 #include "PrecompiledHeader.h"
 #include "Common.h"
-#include "IPU.h"
+#include "IPU/IPU.h"
 #include "IPU/IPUdma.h"
-#include "mpeg2lib/Mpeg.h"
+#include "IPU/IPU_MultiISA.h"
 
 alignas(16) IPU_Fifo ipu_fifo;
 
@@ -124,7 +124,7 @@ int IPU_Fifo_Output::write(const u32 *value, uint size)
 	uint origsize = size;
 	/*do {*/
 		//IPU0dma();
-	
+
 		uint transsize = std::min(size, 8 - (uint)ipuRegs.ctrl.OFC);
 		if(!transsize) return 0;
 
@@ -147,7 +147,7 @@ void IPU_Fifo_Output::read(void *value, uint size)
 {
 	pxAssert(ipuRegs.ctrl.OFC >= size);
 	ipuRegs.ctrl.OFC -= size;
-	
+
 	// Zeroing the read data is not needed, since the ringbuffer design will never read back
 	// the zero'd data anyway. --air
 

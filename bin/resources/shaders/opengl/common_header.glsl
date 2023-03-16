@@ -6,6 +6,7 @@
 
 #ifdef VERTEX_SHADER
 
+#if !pGL_ES
 out gl_PerVertex {
     vec4 gl_Position;
     float gl_PointSize;
@@ -13,6 +14,7 @@ out gl_PerVertex {
     float gl_ClipDistance[1];
 #endif
 };
+#endif
 
 #endif
 
@@ -20,6 +22,7 @@ out gl_PerVertex {
 
 #ifdef GEOMETRY_SHADER
 
+#if !pGL_ES
 in gl_PerVertex {
     vec4 gl_Position;
     float gl_PointSize;
@@ -35,6 +38,7 @@ out gl_PerVertex {
     float gl_ClipDistance[1];
 #endif
 };
+#endif
 
 #endif
 
@@ -71,13 +75,12 @@ layout(std140, binding = 0) uniform cb21
     float MaxDepthPS;
     float Af;
 
-    uvec4 MskFix;
-
     uvec4 FbMask;
 
     vec4 HalfTexel;
 
     vec4 MinMax;
+    vec4 STRange;
 
     ivec4 ChannelShuffle;
 
@@ -85,13 +88,11 @@ layout(std140, binding = 0) uniform cb21
     vec2 STScale;
 
     mat4 DitherMatrix;
+
+    float ScaledScaleFactor;
+    float RcpScaleFactor;
 };
 #endif
-
-//layout(std140, binding = 22) uniform cb22
-//{
-//    vec4 rt_size;
-//};
 
 //////////////////////////////////////////////////////////////////////
 // Default Sampler

@@ -18,15 +18,12 @@
 #include "R3000A.h"
 #include "Common.h"
 #include "Config.h"
+#include "VMManager.h"
 
 #include "R5900OpcodeTables.h"
 #include "DebugTools/Breakpoints.h"
 #include "IopBios.h"
 #include "IopHw.h"
-
-#ifndef PCSX2_CORE
-#include "gui/SysThreads.h"
-#endif
 
 using namespace R3000A;
 
@@ -147,9 +144,7 @@ void psxBreakpoint(bool memcheck)
 	}
 
 	CBreakPoints::SetBreakpointTriggered(true);
-#ifndef PCSX2_CORE
-	GetCoreThread().PauseSelfDebug();
-#endif
+	VMManager::SetPaused(true);
 	throw Exception::ExitCpuExecute();
 }
 
@@ -162,13 +157,11 @@ void psxMemcheck(u32 op, u32 bits, bool store)
 
 	u32 end = start + bits / 8;
 
-	auto checks = CBreakPoints::GetMemChecks();
+	auto checks = CBreakPoints::GetMemChecks(BREAKPOINT_IOP);
 	for (size_t i = 0; i < checks.size(); i++)
 	{
 		auto& check = checks[i];
 
-		if (check.cpu != BREAKPOINT_IOP)
-			continue;
 		if (check.result == 0)
 			continue;
 		if ((check.cond & MEMCHECK_WRITE) == 0 && store)
@@ -187,7 +180,7 @@ void psxCheckMemcheck()
 	int needed = psxIsMemcheckNeeded(pc);
 	if (needed == 0)
 		return;
-	
+
 	u32 op = iopMemRead32(needed == 2 ? pc + 4 : pc);
 	// Yeah, we use the R5900 opcode table for the R3000
 	const R5900::OPCODE& opcode = R5900::GetInstruction(op);
@@ -243,11 +236,11 @@ static __fi void execI()
 	if ((psxHu32(HW_ICFG) & (1 << 3)))
 	{
 		//One of the Iop to EE delta clocks to be set in PS1 mode.
-		iopCycleEE-=9;
+		psxRegs.iopCycleEE -= 9;
 	}
 	else
 	{   //default ps2 mode value
-		iopCycleEE-=8;
+		psxRegs.iopCycleEE -= 8;
 	}
 	psxBSC[psxRegs.code >> 26]();
 }
@@ -278,12 +271,12 @@ static void intReset() {
 
 static s32 intExecuteBlock( s32 eeCycles )
 {
-	iopBreak = 0;
-	iopCycleEE = eeCycles;
+	psxRegs.iopBreak = 0;
+	psxRegs.iopCycleEE = eeCycles;
 
 	try
 	{
-		while (iopCycleEE > 0) {
+		while (psxRegs.iopCycleEE > 0) {
 			if ((psxHu32(HW_ICFG) & 8) && ((psxRegs.pc & 0x1fffffffU) == 0xa0 || (psxRegs.pc & 0x1fffffffU) == 0xb0 || (psxRegs.pc & 0x1fffffffU) == 0xc0))
 				psxBiosCall();
 
@@ -299,7 +292,7 @@ static s32 intExecuteBlock( s32 eeCycles )
 		Cpu->ExitExecution();
 	}
 
-	return iopBreak + iopCycleEE;
+	return psxRegs.iopBreak + psxRegs.iopCycleEE;
 }
 
 static void intClear(u32 Addr, u32 Size) {
@@ -308,22 +301,10 @@ static void intClear(u32 Addr, u32 Size) {
 static void intShutdown() {
 }
 
-static void intSetCacheReserve( uint reserveInMegs )
-{
-}
-
-static uint intGetCacheReserve()
-{
-	return 0;
-}
-
 R3000Acpu psxInt = {
 	intReserve,
 	intReset,
 	intExecuteBlock,
 	intClear,
-	intShutdown,
-
-	intGetCacheReserve,
-	intSetCacheReserve
+	intShutdown
 };

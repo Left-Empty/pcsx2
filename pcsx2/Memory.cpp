@@ -47,11 +47,8 @@ BIOS
 #include "SPU2/spu2.h"
 
 #include "common/AlignedMalloc.h"
-#include "common/PageFaultSource.h"
 
-#ifdef PCSX2_CORE
 #include "GSDumpReplayer.h"
-#endif
 
 #ifdef ENABLECACHE
 #include "Cache.h"
@@ -154,10 +151,9 @@ void memMapPhy()
 	vtlb_MapHandler(null_handler, Ps2MemSize::MainRam, 0x10000000 - Ps2MemSize::MainRam);
 
 	// Various ROMs (all read-only)
-	vtlb_MapBlock(eeMem->ROM,	0x1fc00000,Ps2MemSize::Rom);
-	vtlb_MapBlock(eeMem->ROM1,	0x1e000000,Ps2MemSize::Rom1);
-	vtlb_MapBlock(eeMem->ROM2,	0x1e400000,Ps2MemSize::Rom2);
-	vtlb_MapBlock(eeMem->EROM,	0x1e040000,Ps2MemSize::ERom);
+	vtlb_MapBlock(eeMem->ROM,	0x1fc00000, Ps2MemSize::Rom);
+	vtlb_MapBlock(eeMem->ROM1,	0x1e000000, Ps2MemSize::Rom1);
+	vtlb_MapBlock(eeMem->ROM2,	0x1e400000, Ps2MemSize::Rom2);
 
 	// IOP memory
 	// (used by the EE Bios Kernel during initial hardware initialization, Apps/Games
@@ -224,9 +220,9 @@ static mem32_t nullRead32(u32 mem) {
 	MEM_LOG("Read uninstalled memory at address %08x", mem);
 	return 0;
 }
-static RETURNS_R64 nullRead64(u32 mem) {
+static mem64_t nullRead64(u32 mem) {
 	MEM_LOG("Read uninstalled memory at address %08x", mem);
-	return r64_zero();
+	return 0;
 }
 static RETURNS_R128 nullRead128(u32 mem) {
 	MEM_LOG("Read uninstalled memory at address %08x", mem);
@@ -244,11 +240,11 @@ static void nullWrite32(u32 mem, mem32_t value)
 {
 	MEM_LOG("Write uninstalled memory at address %08x", mem);
 }
-static void nullWrite64(u32 mem, const mem64_t *value)
+static void nullWrite64(u32 mem, mem64_t value)
 {
 	MEM_LOG("Write uninstalled memory at address %08x", mem);
 }
-static void nullWrite128(u32 mem, const mem128_t *value)
+static void TAKES_R128 nullWrite128(u32 mem, r128 value)
 {
 	MEM_LOG("Write uninstalled memory at address %08x", mem);
 }
@@ -328,18 +324,18 @@ static mem32_t _ext_memRead32(u32 mem)
 }
 
 template<int p>
-static RETURNS_R64 _ext_memRead64(u32 mem)
+static u64 _ext_memRead64(u32 mem)
 {
 	switch (p)
 	{
 		case 6: // gsm
-			return r64_from_u64(gsRead64(mem));
+			return gsRead64(mem);
 		default: break;
 	}
 
 	MEM_LOG("Unknown Memory read64  from address %8.8x", mem);
 	cpuTlbMissR(mem, cpuRegs.branch);
-	return r64_zero();
+	return 0;
 }
 
 template<int p>
@@ -416,7 +412,7 @@ static void _ext_memWrite32(u32 mem, mem32_t value)
 }
 
 template<int p>
-static void _ext_memWrite64(u32 mem, const mem64_t* value)
+static void _ext_memWrite64(u32 mem, mem64_t value)
 {
 
 	/*switch (p) {
@@ -427,12 +423,12 @@ static void _ext_memWrite64(u32 mem, const mem64_t* value)
 		//	gsWrite64(mem & ~0xa0000000, *value); return;
 	}*/
 
-	MEM_LOG("Unknown Memory write64  to  address %x with data %8.8x_%8.8x", mem, (u32)(*value>>32), (u32)*value);
+	MEM_LOG("Unknown Memory write64  to  address %x with data %8.8x_%8.8x", mem, (u32)(value>>32), (u32)value);
 	cpuTlbMissW(mem, cpuRegs.branch);
 }
 
 template<int p>
-static void _ext_memWrite128(u32 mem, const mem128_t *value)
+static void TAKES_R128 _ext_memWrite128(u32 mem, r128 value)
 {
 	/*switch (p) {
 		//case 1: // hwm
@@ -444,7 +440,8 @@ static void _ext_memWrite128(u32 mem, const mem128_t *value)
 		//	gsWrite64(mem+8, value[1]); return;
 	}*/
 
-	MEM_LOG("Unknown Memory write128 to  address %x with data %8.8x_%8.8x_%8.8x_%8.8x", mem, ((u32*)value)[3], ((u32*)value)[2], ((u32*)value)[1], ((u32*)value)[0]);
+	alignas(16) const u128 uvalue = r128_to_u128(value);
+	MEM_LOG("Unknown Memory write128 to  address %x with data %8.8x_%8.8x_%8.8x_%8.8x", mem, uvalue._u32[3], uvalue._u32[2], uvalue._u32[1], uvalue._u32[0]);
 	cpuTlbMissW(mem, cpuRegs.branch);
 }
 
@@ -462,36 +459,36 @@ template<int vunum> static __fi void ClearVuFunc(u32 addr, u32 size) {
 template<int vunum> static mem8_t vuMicroRead8(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
-	
+
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return vu->Micro[addr];
 }
 template<int vunum> static mem16_t vuMicroRead16(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
-	
+
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return *(u16*)&vu->Micro[addr];
 }
 template<int vunum> static mem32_t vuMicroRead32(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
-	
+
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return *(u32*)&vu->Micro[addr];
 }
-template<int vunum> static RETURNS_R64 vuMicroRead64(u32 addr) {
+template<int vunum> static mem64_t vuMicroRead64(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
-	
+
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
-	return r64_load(&vu->Micro[addr]);
+	return *(u64*)&vu->Micro[addr];
 }
 template<int vunum> static RETURNS_R128 vuMicroRead128(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
-	
+
 	return r128_load(&vu->Micro[addr]);
 }
 
@@ -500,7 +497,7 @@ template<int vunum> static RETURNS_R128 vuMicroRead128(u32 addr) {
 template<int vunum> static void vuMicroWrite8(u32 addr,mem8_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
-	
+
 	if (vunum && THREAD_VU1) {
 		vu1Thread.WriteMicroMem(addr, &data, sizeof(u8));
 		return;
@@ -513,7 +510,7 @@ template<int vunum> static void vuMicroWrite8(u32 addr,mem8_t data) {
 template<int vunum> static void vuMicroWrite16(u32 addr, mem16_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
-	
+
 	if (vunum && THREAD_VU1) {
 		vu1Thread.WriteMicroMem(addr, &data, sizeof(u16));
 		return;
@@ -526,7 +523,7 @@ template<int vunum> static void vuMicroWrite16(u32 addr, mem16_t data) {
 template<int vunum> static void vuMicroWrite32(u32 addr, mem32_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
-	
+
 	if (vunum && THREAD_VU1) {
 		vu1Thread.WriteMicroMem(addr, &data, sizeof(u32));
 		return;
@@ -536,31 +533,33 @@ template<int vunum> static void vuMicroWrite32(u32 addr, mem32_t data) {
 		*(u32*)&vu->Micro[addr] =data;
 	}
 }
-template<int vunum> static void vuMicroWrite64(u32 addr, const mem64_t* data) {
+template<int vunum> static void vuMicroWrite64(u32 addr, mem64_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 
 	if (vunum && THREAD_VU1) {
-		vu1Thread.WriteMicroMem(addr, (void*)data, sizeof(u64));
+		vu1Thread.WriteMicroMem(addr, &data, sizeof(u64));
 		return;
 	}
-	
-	if (*(u64*)&vu->Micro[addr]!=data[0]) {
+
+	if (*(u64*)&vu->Micro[addr]!=data) {
 		ClearVuFunc<vunum>(addr, 8);
-		*(u64*)&vu->Micro[addr] =data[0];
+		*(u64*)&vu->Micro[addr] =data;
 	}
 }
-template<int vunum> static void vuMicroWrite128(u32 addr, const mem128_t* data) {
+template<int vunum> static void TAKES_R128 vuMicroWrite128(u32 addr, r128 data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 
+	const u128 udata = r128_to_u128(data);
+
 	if (vunum && THREAD_VU1) {
-		vu1Thread.WriteMicroMem(addr, (void*)data, sizeof(u128));
+		vu1Thread.WriteMicroMem(addr, &udata, sizeof(u128));
 		return;
 	}
-	if ((u128&)vu->Micro[addr]!=*data) {
+	if ((u128&)vu->Micro[addr]!=udata) {
 		ClearVuFunc<vunum>(addr, 16);
-		CopyQWC(&vu->Micro[addr],data);
+		r128_store_unaligned(&vu->Micro[addr],data);
 	}
 }
 
@@ -583,11 +582,11 @@ template<int vunum> static mem32_t vuDataRead32(u32 addr) {
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
 	return *(u32*)&vu->Mem[addr];
 }
-template<int vunum> static RETURNS_R64 vuDataRead64(u32 addr) {
+template<int vunum> static mem64_t vuDataRead64(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) vu1Thread.WaitVU();
-	return r64_load(&vu->Mem[addr]);
+	return *(u64*)&vu->Mem[addr];
 }
 template<int vunum> static RETURNS_R128 vuDataRead128(u32 addr) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
@@ -624,23 +623,24 @@ template<int vunum> static void vuDataWrite32(u32 addr, mem32_t data) {
 	}
 	*(u32*)&vu->Mem[addr] = data;
 }
-template<int vunum> static void vuDataWrite64(u32 addr, const mem64_t* data) {
+template<int vunum> static void vuDataWrite64(u32 addr, mem64_t data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) {
-		vu1Thread.WriteDataMem(addr, (void*)data, sizeof(u64));
+		vu1Thread.WriteDataMem(addr, &data, sizeof(u64));
 		return;
 	}
-	*(u64*)&vu->Mem[addr] = data[0];
+	*(u64*)&vu->Mem[addr] = data;
 }
-template<int vunum> static void vuDataWrite128(u32 addr, const mem128_t* data) {
+template<int vunum> static void TAKES_R128 vuDataWrite128(u32 addr, r128 data) {
 	VURegs* vu = vunum ?  &VU1 :  &VU0;
 	addr      &= vunum ? 0x3fff: 0xfff;
 	if (vunum && THREAD_VU1) {
-		vu1Thread.WriteDataMem(addr, (void*)data, sizeof(u128));
+		alignas(16) const u128 udata = r128_to_u128(data);
+		vu1Thread.WriteDataMem(addr, &udata, sizeof(u128));
 		return;
 	}
-	CopyQWC(&vu->Mem[addr], data);
+	r128_store_unaligned(&vu->Mem[addr], data);
 }
 
 
@@ -666,14 +666,6 @@ void memClearPageAddr(u32 vaddr)
 
 ///////////////////////////////////////////////////////////////////////////
 // PS2 Memory Init / Reset / Shutdown
-
-class mmap_PageFaultHandler : public EventListener_PageFault
-{
-public:
-	void OnPageFaultEvent( const PageFaultInfo& info, bool& handled );
-};
-
-static mmap_PageFaultHandler* mmap_faultHandler = NULL;
 
 EEVM_MemoryAllocMess* eeMem = NULL;
 alignas(__pagesize) u8 eeHw[Ps2MemSize::Hardware];
@@ -712,30 +704,25 @@ void memBindConditionalHandlers()
 //  eeMemoryReserve  (implementations)
 // --------------------------------------------------------------------------------------
 eeMemoryReserve::eeMemoryReserve()
-	: _parent( "EE Main Memory", sizeof(*eeMem) )
+	: _parent("EE Main Memory")
 {
 }
 
-void eeMemoryReserve::Reserve(VirtualMemoryManagerPtr allocator)
+eeMemoryReserve::~eeMemoryReserve()
 {
-	_parent::Reserve(std::move(allocator), HostMemoryMap::EEmemOffset);
-	//_parent::Reserve(EmuConfig.HostMap.IOP);
+	Release();
 }
 
-void eeMemoryReserve::Commit()
+void eeMemoryReserve::Assign(VirtualMemoryManagerPtr allocator)
 {
-	_parent::Commit();
-	eeMem = (EEVM_MemoryAllocMess*)m_reserve.GetPtr();
+	_parent::Assign(std::move(allocator), HostMemoryMap::EEmemOffset, sizeof(*eeMem));
+	eeMem = reinterpret_cast<EEVM_MemoryAllocMess*>(GetPtr());
 }
+
 
 // Resets memory mappings, unmaps TLBs, reloads bios roms, etc.
 void eeMemoryReserve::Reset()
 {
-	if(!mmap_faultHandler) {
-		pxAssert(Source_PageFault);
-		mmap_faultHandler = new mmap_PageFaultHandler();
-	}
-	
 	_parent::Reset();
 
 	// Note!!  Ideally the vtlb should only be initialized once, and then subsequent
@@ -765,7 +752,7 @@ void eeMemoryReserve::Reset()
 	vu0_micro_mem = vtlb_RegisterHandlerTempl1(vuMicro,0);
 	vu1_micro_mem = vtlb_RegisterHandlerTempl1(vuMicro,1);
 	vu1_data_mem  = (1||THREAD_VU1) ? vtlb_RegisterHandlerTempl1(vuData,1) : 0;
-	
+
 	//////////////////////////////////////////////////////////////////////////////////////////
 	// IOP's "secret" Hardware Register mapping, accessible from the EE (and meant for use
 	// by debugging or BIOS only).  The IOP's hw regs are divided into three main pages in
@@ -797,7 +784,7 @@ void eeMemoryReserve::Reset()
 
 	// psHw Optimized Mappings
 	// The HW Registers have been split into pages to improve optimization.
-	
+
 #define hwHandlerTmpl(page) \
 	hwRead8<page>,	hwRead16<page>,	hwRead32<page>,	hwRead64<page>,	hwRead128<page>, \
 	hwWrite8<page>,	hwWrite16<page>,hwWrite32<page>,hwWrite64<page>,hwWrite128<page>
@@ -854,156 +841,15 @@ void eeMemoryReserve::Reset()
 	vtlb_VMap(0x00000000,0x00000000,0x20000000);
 	vtlb_VMapUnmap(0x20000000,0x60000000);
 
-#ifdef PCSX2_CORE
 	const bool needs_bios = !GSDumpReplayer::IsReplayingDump();
-#else
-	constexpr bool needs_bios = true;
-#endif
 
+	// TODO(Stenzek): Move BIOS loading out and far away...
 	if (needs_bios && !LoadBIOS())
 		pxFailRel("Failed to load BIOS");
 }
 
-void eeMemoryReserve::Decommit()
+void eeMemoryReserve::Release()
 {
-	_parent::Decommit();
-	eeMem = NULL;
-}
-
-eeMemoryReserve::~eeMemoryReserve()
-{
-	safe_delete(mmap_faultHandler);
-	vtlb_Term();
-}
-
-
-// ===========================================================================================
-//  Memory Protection and Block Checking, vtlb Style! 
-// ===========================================================================================
-// For the first time code is recompiled (executed), the PS2 ram page for that code is
-// protected using Virtual Memory (mprotect).  If the game modifies its own code then this
-// protection causes an *exception* to be raised (signal in Linux), which is handled by
-// unprotecting the page and switching the recompiled block to "manual" protection.
-//
-// Manual protection uses a simple brute-force memcmp of the recompiled code to the code
-// currently in RAM for *each time* the block is executed.  Fool-proof, but slow, which
-// is why we default to using the exception-based protection scheme described above.
-//
-// Why manual blocks?  Because many games contain code and data in the same 4k page, so
-// we *cannot* automatically recompile and reprotect pages, lest we end up recompiling and
-// reprotecting them constantly (Which would be very slow).  As a counter, the R5900 side
-// of the block checking code does try to periodically re-protect blocks [going from manual
-// back to protected], so that blocks which underwent a single invalidation don't need to
-// incur a permanent performance penalty.
-//
-// Page Granularity:
-// Fortunately for us MIPS and x86 use the same page granularity for TLB and memory
-// protection, so we can use a 1:1 correspondence when protecting pages.  Page granularity
-// is 4096 (4k), which is why you'll see a lot of 0xfff's, >><< 12's, and 0x1000's in the
-// code below.
-//
-
-struct vtlb_PageProtectionInfo
-{
-	// Ram De-mapping -- used to convert fully translated/mapped offsets (which reside with
-	// in the eeMem->Main block) back into their originating ps2 physical ram address.
-	// Values are assigned when pages are marked for protection.  since pages are automatically
-	// cleared and reset when TLB-remapped, stale values in this table (due to on-the-fly TLB
-	// changes) will be re-assigned the next time the page is accessed.
-	u32 ReverseRamMap;
-
-	vtlb_ProtectionMode Mode;
-};
-
-alignas(16) static vtlb_PageProtectionInfo m_PageProtectInfo[Ps2MemSize::MainRam >> 12];
-
-
-// returns:
-//  ProtMode_NotRequired - unchecked block (resides in ROM, thus is integrity is constant)
-//  Or the current mode
-//
-vtlb_ProtectionMode mmap_GetRamPageInfo( u32 paddr )
-{
-	pxAssert( eeMem );
-
-	paddr &= ~0xfff;
-
-	uptr ptr = (uptr)PSM( paddr );
-	uptr rampage = ptr - (uptr)eeMem->Main;
-
-	if (rampage >= Ps2MemSize::MainRam)
-		return ProtMode_NotRequired; //not in ram, no tracking done ...
-
-	rampage >>= 12;
-
-	return m_PageProtectInfo[rampage].Mode;
-}
-
-// paddr - physically mapped PS2 address
-void mmap_MarkCountedRamPage( u32 paddr )
-{
-	pxAssert( eeMem );
-	
-	paddr &= ~0xfff;
-
-	uptr ptr = (uptr)PSM( paddr );
-	int rampage = (ptr - (uptr)eeMem->Main) >> 12;
-
-	// Important: Update the ReverseRamMap here because TLB changes could alter the paddr
-	// mapping into eeMem->Main.
-
-	m_PageProtectInfo[rampage].ReverseRamMap = paddr;
-
-	if( m_PageProtectInfo[rampage].Mode == ProtMode_Write )
-		return;		// skip town if we're already protected.
-
-	eeRecPerfLog.Write( (m_PageProtectInfo[rampage].Mode == ProtMode_Manual) ?
-		"Re-protecting page @ 0x%05x" : "Protected page @ 0x%05x",
-		paddr>>12
-	);
-
-	m_PageProtectInfo[rampage].Mode = ProtMode_Write;
-	HostSys::MemProtect( &eeMem->Main[rampage<<12], __pagesize, PageAccess_ReadOnly() );
-}
-
-// offset - offset of address relative to psM.
-// All recompiled blocks belonging to the page are cleared, and any new blocks recompiled
-// from code residing in this page will use manual protection.
-static __fi void mmap_ClearCpuBlock( uint offset )
-{
-	pxAssert( eeMem );
-
-	int rampage = offset >> 12;
-
-	// Assertion: This function should never be run on a block that's already under
-	// manual protection.  Indicates a logic error in the recompiler or protection code.
-	pxAssertMsg( m_PageProtectInfo[rampage].Mode != ProtMode_Manual,
-		"Attempted to clear a block that is already under manual protection." );
-
-	HostSys::MemProtect( &eeMem->Main[rampage<<12], __pagesize, PageAccess_ReadWrite() );
-	m_PageProtectInfo[rampage].Mode = ProtMode_Manual;
-	Cpu->Clear( m_PageProtectInfo[rampage].ReverseRamMap, 0x400 );
-}
-
-void mmap_PageFaultHandler::OnPageFaultEvent( const PageFaultInfo& info, bool& handled )
-{
-	pxAssert( eeMem );
-
-	// get bad virtual address
-	uptr offset = info.addr - (uptr)eeMem->Main;
-	if( offset >= Ps2MemSize::MainRam ) return;
-
-	mmap_ClearCpuBlock( offset );
-	handled = true;
-}
-
-// Clears all block tracking statuses, manual protection flags, and write protection.
-// This does not clear any recompiler blocks.  It is assumed (and necessary) for the caller
-// to ensure the EErec is also reset in conjunction with calling this function.
-//  (this function is called by default from the eerecReset).
-void mmap_ResetBlockTracking()
-{
-	//DbgCon.WriteLn( "vtlb/mmap: Block Tracking reset..." );
-	memzero( m_PageProtectInfo );
-	if (eeMem) HostSys::MemProtect( eeMem->Main, Ps2MemSize::MainRam, PageAccess_ReadWrite() );
+	eeMem = nullptr;
+	_parent::Release();
 }

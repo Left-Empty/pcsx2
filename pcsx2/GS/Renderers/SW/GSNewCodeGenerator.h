@@ -15,38 +15,17 @@
 
 #pragma once
 
+#if defined(_MSC_VER) && defined(__clang__)
+#define and and_
+#define or or_
+#define xor xor_
+#define not not_
+#define XBYAK_NO_OP_NAMES
+#endif
+
 #include "xbyak/xbyak.h"
 #include "xbyak/xbyak_util.h"
-
-namespace SSEVersion
-{
-	enum SSEVersion
-	{
-		AVX2  = 0x501,
-		AVX   = 0x500,
-		SSE41 = 0x401,
-	};
-}
-
-/// Similar to Xbyak::util::cpu but more open to us putting in extra flags (e.g. "vpgatherdd is fast"), as well as making it easier to test other configurations by artifically limiting features
-struct CPUInfo
-{
-	bool hasFMA = false;
-	SSEVersion::SSEVersion sseVersion = SSEVersion::SSE41;
-
-	CPUInfo() = default;
-	CPUInfo(const Xbyak::util::Cpu& cpu)
-	{
-		auto version = SSEVersion::SSE41;
-		if (cpu.has(cpu.tAVX))
-			version = SSEVersion::AVX;
-		if (cpu.has(cpu.tAVX2))
-			version = SSEVersion::AVX2;
-
-		hasFMA = cpu.has(cpu.tFMA);
-		sseVersion = version;
-	}
-};
+#include "GS/MultiISA.h"
 
 /// Code generator that automatically selects between SSE and AVX, x86 and x64 so you don't have to
 /// Should make combined SSE and AVX codegen much easier
@@ -112,12 +91,6 @@ public:
 	using AddressReg = Xbyak::Reg64;
 	using RipType = Xbyak::RegRip;
 
-	template <typename T32, typename T64>
-	struct Choose3264 { using type = T64; };
-
-	template <typename T32, typename T64>
-	static T64 choose3264(T32 t32, T64 t64) { return t64; }
-
 	const bool hasAVX, hasAVX2, hasFMA;
 
 	const Xmm xmm0{0}, xmm1{1}, xmm2{2}, xmm3{3}, xmm4{4}, xmm5{5}, xmm6{6}, xmm7{7}, xmm8{8}, xmm9{9}, xmm10{10}, xmm11{11}, xmm12{12}, xmm13{13}, xmm14{14}, xmm15{15};
@@ -130,10 +103,10 @@ public:
 	const RipType rip{};
 	const Xbyak::AddressFrame ptr{0}, byte{8}, word{16}, dword{32}, qword{64}, xword{128}, yword{256}, zword{512};
 
-	GSNewCodeGenerator(Xbyak::CodeGenerator* actual, CPUInfo cpu)
+	GSNewCodeGenerator(Xbyak::CodeGenerator* actual, const ProcessorFeatures& cpu)
 		: actual(*actual)
-		, hasAVX(cpu.sseVersion >= SSEVersion::AVX)
-		, hasAVX2(cpu.sseVersion >= SSEVersion::AVX2)
+		, hasAVX(cpu.vectorISA >= ProcessorFeatures::VectorISA::AVX)
+		, hasAVX2(cpu.vectorISA >= ProcessorFeatures::VectorISA::AVX2)
 		, hasFMA(cpu.hasFMA)
 	{
 	}
@@ -220,7 +193,7 @@ public:
 		ACTUAL_FORWARD_##category(name, a, b, c, d) \
 	}
 
-#ifdef __GNUC__
+#if defined(__GNUC__) || (defined(_MSC_VER) && defined(__clang__))
 	#define FORWARD_(argcount, ...) FORWARD##argcount(__VA_ARGS__)
 	// Gets the macro evaluator to evaluate in the right order
 	#define FORWARD(...) FORWARD_(__VA_ARGS__)
@@ -248,7 +221,7 @@ public:
 #define ADD_ONE_2 3
 #define ADD_ONE_3 4
 
-#ifdef __GNUC__
+#if defined(__GNUC__) || defined(_MSC_VER) && defined(__clang__)
 	#define SFORWARD(argcount, name, ...) FORWARD(argcount, SSE, name, __VA_ARGS__)
 	#define AFORWARD_(argcount, name, arg1, ...) \
 		SFORWARD(argcount, name, arg1, __VA_ARGS__) \

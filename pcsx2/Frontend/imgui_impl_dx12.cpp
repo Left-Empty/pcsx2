@@ -117,7 +117,6 @@ static void ImGui_ImplDX12_SetupRenderState(ImDrawData* draw_data, ID3D12Graphic
 
     // Bind shader and vertex buffers
     unsigned int stride = sizeof(ImDrawVert);
-    unsigned int offset = 0;
     D3D12_VERTEX_BUFFER_VIEW vbv;
     memset(&vbv, 0, sizeof(D3D12_VERTEX_BUFFER_VIEW));
     vbv.BufferLocation = bd->VertexStreamBuffer.GetCurrentGPUPointer();
@@ -165,7 +164,7 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data)
     if (!bd->VertexStreamBuffer.ReserveMemory(needed_vb, sizeof(ImDrawVert)) ||
       !bd->IndexStreamBuffer.ReserveMemory(needed_ib, sizeof(ImDrawIdx)))
     {
-        g_d3d12_context->ExecuteCommandList(false);
+        g_d3d12_context->ExecuteCommandList(D3D12::Context::WaitType::None);
         if (!bd->VertexStreamBuffer.ReserveMemory(needed_vb, sizeof(ImDrawVert)) ||
           !bd->IndexStreamBuffer.ReserveMemory(needed_ib, sizeof(ImDrawIdx)))
         {
@@ -230,7 +229,7 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data)
                     if (!g_d3d12_context->GetDescriptorAllocator().Allocate(1, &handle))
                     {
                         // ugh.
-                        g_d3d12_context->ExecuteCommandList(false);
+                        g_d3d12_context->ExecuteCommandList(D3D12::Context::WaitType::None);
                         ctx = g_d3d12_context->GetCommandList();
                         ImGui_ImplDX12_SetupRenderState(draw_data, ctx);
                         if (!g_d3d12_context->GetDescriptorAllocator().Allocate(1, &handle))

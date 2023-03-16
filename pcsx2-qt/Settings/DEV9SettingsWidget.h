@@ -42,13 +42,18 @@ private Q_SLOTS:
 	void onEthHostDel();
 	void onEthHostExport();
 	void onEthHostImport();
+	void onEthHostPerGame();
 	void onEthHostEdit(QStandardItem* item);
 
 	void onHddEnabledChanged(int state);
 	void onHddBrowseFileClicked();
 	void onHddFileEdit();
 	void onHddSizeSlide(int i);
-	void onHddSizeSpin(int i);
+	// Per game only.
+	void onHddSizeSliderContext(const QPoint& pt);
+	void onHddSizeSliderReset(bool checked = false);
+	//
+	void onHddSizeAccessorSpin();
 	void onHddCreateClicked();
 
 public:
@@ -63,7 +68,8 @@ private:
 	void AddAdapter(const AdapterEntry& adapter);
 	void RefreshHostList();
 	int CountHostsConfig();
-	std::vector<HostEntryUi> ListHostsConfig();
+	std::optional<std::vector<HostEntryUi>> ListHostsConfig();
+	std::vector<HostEntryUi> ListBaseHostsConfig();
 	void AddNewHostConfig(const HostEntryUi& host);
 	void DeleteHostConfig(int index);
 

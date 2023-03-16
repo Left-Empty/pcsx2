@@ -34,6 +34,9 @@
     <ClCompile Include="emitter\LnxCpuDetect.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="emitter\avx.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Linux\LnxHostSys.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -55,13 +58,13 @@
     <ClCompile Include="PrecompiledHeader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ReadbackSpinManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Semaphore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="emitter\simd.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="VirtualMemory.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="emitter\WinCpuDetect.cpp">
@@ -184,6 +187,28 @@
     <ClCompile Include="CrashHandler.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Image.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="HTTPDownloader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="HTTPDownloaderCurl.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="HTTPDownloaderWinHTTP.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MemorySettingsInterface.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="DynamicLibrary.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="WAVWriter.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="General.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AlignedMalloc.h">
@@ -205,9 +230,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="emitter\implement\dwshift.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="EventSource.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Exceptions.h">
@@ -261,6 +283,9 @@
     <ClInclude Include="PrecompiledHeader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ReadbackSpinManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="RedtapeWindows.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -283,6 +308,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="emitter\implement\movs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="emitter\implement\avx.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Threading.h">
@@ -432,6 +460,39 @@
     <ClInclude Include="LRUCache.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Image.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Easing.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HTTPDownloader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HTTPDownloaderCurl.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HTTPDownloaderWinHTTP.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ThreadPool.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HeterogeneousContainers.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MemorySettingsInterface.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HeapArray.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DynamicLibrary.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="WAVWriter.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Source Files">
@@ -466,9 +527,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <None Include="EventSource.inl">
-      <Filter>Source Files</Filter>
-    </None>
     <None Include="Vulkan\EntryPoints.inl">
       <Filter>Source Files\Vulkan</Filter>
     </None>

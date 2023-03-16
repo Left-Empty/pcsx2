@@ -17,19 +17,17 @@
 #include "GS.h"
 #include "GSExtra.h"
 #include "GSUtil.h"
+#include "MultiISA.h"
 #include "common/StringUtil.h"
 
 #ifdef _WIN32
+#include "common/RedtapeWindows.h"
+#include <d3dcommon.h>
+#include <dxgi.h>
 #include <VersionHelpers.h>
-#include "svnrev.h"
 #include "Renderers/DX11/D3D.h"
 #include <wil/com.h>
-#else
-#define SVN_REV 0
-#define SVN_MODS 0
 #endif
-
-Xbyak::util::Cpu g_cpu;
 
 static class GSUtilMaps
 {
@@ -132,54 +130,42 @@ bool GSUtil::HasSharedBits(u32 spsm, const u32* RESTRICT ptr)
 	return (ptr[spsm >> 5] & (1 << (spsm & 0x1f))) == 0;
 }
 
+// Pixels can NOT coexist in the same 32bits of space.
+// Example: Using PSMT8H or PSMT4HL/HH with CT24 would fail this check.
 bool GSUtil::HasSharedBits(u32 spsm, u32 dpsm)
 {
 	return (s_maps.SharedBitsField[dpsm][spsm >> 5] & (1 << (spsm & 0x1f))) == 0;
 }
 
+// Pixels can NOT coexist in the same 32bits of space.
+// Example: Using PSMT8H or PSMT4HL/HH with CT24 would fail this check.
+// SBP and DBO must match.
 bool GSUtil::HasSharedBits(u32 sbp, u32 spsm, u32 dbp, u32 dpsm)
 {
 	return ((sbp ^ dbp) | (s_maps.SharedBitsField[dpsm][spsm >> 5] & (1 << (spsm & 0x1f)))) == 0;
 }
 
+// Shares bit depths, only detects 16/24/32 bit formats.
+// 24/32bit cross compatible, 16bit compatbile with 16bit.
 bool GSUtil::HasCompatibleBits(u32 spsm, u32 dpsm)
 {
 	return (s_maps.CompatibleBitsField[spsm][dpsm >> 5] & (1 << (dpsm & 0x1f))) != 0;
 }
 
-bool GSUtil::CheckSSE()
+u32 GSUtil::GetChannelMask(u32 spsm)
 {
-	bool status = true;
-
-	struct ISA
+	switch (spsm)
 	{
-		Xbyak::util::Cpu::Type type;
-		const char* name;
-	};
-
-	ISA checks[] = {
-		{Xbyak::util::Cpu::tSSE41, "SSE41"},
-#if _M_SSE >= 0x500
-		{Xbyak::util::Cpu::tAVX, "AVX1"},
-#endif
-#if _M_SSE >= 0x501
-		{Xbyak::util::Cpu::tAVX2, "AVX2"},
-		{Xbyak::util::Cpu::tBMI1, "BMI1"},
-		{Xbyak::util::Cpu::tBMI2, "BMI2"},
-#endif
-	};
-
-	for (const ISA& check : checks)
-	{
-		if (!g_cpu.has(check.type))
-		{
-			fprintf(stderr, "This CPU does not support %s\n", check.name);
-
-			status = false;
-		}
+		case PSM_PSMCT24:
+		case PSM_PSMZ24:
+			return 0x7;
+		case PSM_PSMT8H:
+		case PSM_PSMT4HH: // This sucks, I'm sorry, but we don't have a way to do half channels
+		case PSM_PSMT4HL: // So uuhh TODO I guess.
+			return 0x8;
+		default:
+			return 0xf;
 	}
-
-	return status;
 }
 
 CRCHackLevel GSUtil::GetRecommendedCRCHackLevel(GSRendererType type)
@@ -193,14 +179,19 @@ GSRendererType GSUtil::GetPreferredRenderer()
 	// Mac: Prefer Metal hardware.
 	return GSRendererType::Metal;
 #elif defined(_WIN32)
-	if (D3D::ShouldPreferRenderer() == D3D::Renderer::Vulkan)
+	const u8 preferred = D3D::ShouldPreferRenderer();
+#if defined(ENABLE_VULKAN)
+	if (preferred == D3D::Renderer::Vulkan)
 		return GSRendererType::VK;
+#endif
 #if defined(ENABLE_OPENGL)
-	else if (D3D::ShouldPreferRenderer() == D3D::Renderer::OpenGL)
+	if (preferred == D3D::Renderer::OpenGL)
 		return GSRendererType::OGL;
 #endif
-	else
-		return GSRendererType::DX11;
+	if (preferred == D3D::Renderer::Direct3D12)
+		return GSRendererType::DX12;
+
+	return GSRendererType::DX11;
 #else
 	// Linux: Prefer GL/Vulkan, whatever is available.
 #if defined(ENABLE_OPENGL)
@@ -210,37 +201,6 @@ GSRendererType GSUtil::GetPreferredRenderer()
 #else
 	return GSRendererType::SW;
 #endif
-#endif
-}
-
-#ifdef _WIN32
-void GSmkdir(const wchar_t* dir)
-{
-	if (!CreateDirectory(dir, nullptr))
-	{
-		DWORD errorID = ::GetLastError();
-		if (errorID != ERROR_ALREADY_EXISTS)
-		{
-			fprintf(stderr, "Failed to create directory: %ls error %u\n", dir, errorID);
-		}
-	}
-#else
-void GSmkdir(const char* dir)
-{
-	int err = mkdir(dir, 0777);
-	if (!err && errno != EEXIST)
-		fprintf(stderr, "Failed to create directory: %s\n", dir);
-#endif
-}
-
-std::string GStempdir()
-{
-#ifdef _WIN32
-	wchar_t path[MAX_PATH + 1];
-	GetTempPath(MAX_PATH, path);
-	return StringUtil::WideStringToUTF8String(path);
-#else
-	return "/tmp";
 #endif
 }
 

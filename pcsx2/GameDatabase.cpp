@@ -16,8 +16,9 @@
 #include "PrecompiledHeader.h"
 
 #include "GameDatabase.h"
+#include "GS/GS.h"
 #include "Host.h"
-#include "Patch.h"
+#include "IconsFontAwesome5.h"
 #include "vtlb.h"
 
 #include "common/FileSystem.h"
@@ -128,7 +129,20 @@ void GameDatabase::parseAndInsert(const std::string_view& serial, const c4::yml:
 		{
 			int vuVal = -1;
 			node["roundModes"]["vuRoundMode"] >> vuVal;
-			gameEntry.vuRoundMode = static_cast<GameDatabaseSchema::RoundMode>(vuVal);
+			gameEntry.vu0RoundMode = static_cast<GameDatabaseSchema::RoundMode>(vuVal);
+			gameEntry.vu1RoundMode = static_cast<GameDatabaseSchema::RoundMode>(vuVal);
+		}
+		if (node["roundModes"].has_child("vu0RoundMode"))
+		{
+			int vuVal = -1;
+			node["roundModes"]["vu0RoundMode"] >> vuVal;
+			gameEntry.vu0RoundMode = static_cast<GameDatabaseSchema::RoundMode>(vuVal);
+		}
+		if (node["roundModes"].has_child("vu1RoundMode"))
+		{
+			int vuVal = -1;
+			node["roundModes"]["vu1RoundMode"] >> vuVal;
+			gameEntry.vu1RoundMode = static_cast<GameDatabaseSchema::RoundMode>(vuVal);
 		}
 	}
 	if (node.has_child("clampModes"))
@@ -143,7 +157,20 @@ void GameDatabase::parseAndInsert(const std::string_view& serial, const c4::yml:
 		{
 			int vuVal = -1;
 			node["clampModes"]["vuClampMode"] >> vuVal;
-			gameEntry.vuClampMode = static_cast<GameDatabaseSchema::ClampMode>(vuVal);
+			gameEntry.vu0ClampMode = static_cast<GameDatabaseSchema::ClampMode>(vuVal);
+			gameEntry.vu1ClampMode = static_cast<GameDatabaseSchema::ClampMode>(vuVal);
+		}
+		if (node["clampModes"].has_child("vu0ClampMode"))
+		{
+			int vuVal = -1;
+			node["clampModes"]["vu0ClampMode"] >> vuVal;
+			gameEntry.vu0ClampMode = static_cast<GameDatabaseSchema::ClampMode>(vuVal);
+		}
+		if (node["clampModes"].has_child("vu1ClampMode"))
+		{
+			int vuVal = -1;
+			node["clampModes"]["vu1ClampMode"] >> vuVal;
+			gameEntry.vu1ClampMode = static_cast<GameDatabaseSchema::ClampMode>(vuVal);
 		}
 	}
 
@@ -159,7 +186,7 @@ void GameDatabase::parseAndInsert(const std::string_view& serial, const c4::yml:
 			if (StringUtil::EndsWith(fix, "Hack"))
 			{
 				fix.erase(fix.size() - 4);
-				for (GamefixId id = GamefixId_FIRST; id < pxEnumEnd; id++)
+				for (GamefixId id = GamefixId_FIRST; id < pxEnumEnd; ++id)
 				{
 					if (fix.compare(EnumToString(id)) == 0 &&
 						std::find(gameEntry.gameFixes.begin(), gameEntry.gameFixes.end(), id) == gameEntry.gameFixes.end())
@@ -190,7 +217,7 @@ void GameDatabase::parseAndInsert(const std::string_view& serial, const c4::yml:
 			if (StringUtil::EndsWith(speedHack, "SpeedHack"))
 			{
 				speedHack.erase(speedHack.size() - 9);
-				for (SpeedhackId id = SpeedhackId_FIRST; id < pxEnumEnd; id++)
+				for (SpeedhackId id = SpeedhackId_FIRST; id < pxEnumEnd; ++id)
 				{
 					if (speedHack.compare(EnumToString(id)) == 0 &&
 						std::none_of(gameEntry.speedHacks.begin(), gameEntry.speedHacks.end(), [id](const auto& it) { return it.first == id; }))
@@ -215,12 +242,28 @@ void GameDatabase::parseAndInsert(const std::string_view& serial, const c4::yml:
 		{
 			const std::string_view id_name(n.key().data(), n.key().size());
 			std::optional<GameDatabaseSchema::GSHWFixId> id = GameDatabaseSchema::parseHWFixName(id_name);
-			std::optional<s32> value = n.has_val() ? StringUtil::FromChars<s32>(std::string_view(n.val().data(), n.val().size())) : 1;
+			std::optional<s32> value;
+			if (id.has_value() && (id.value() == GameDatabaseSchema::GSHWFixId::GetSkipCount || id.value() == GameDatabaseSchema::GSHWFixId::BeforeDraw))
+			{
+				const std::string_view str_value(n.has_val() ? std::string_view(n.val().data(), n.val().size()) : std::string_view());
+				if (id.value() == GameDatabaseSchema::GSHWFixId::GetSkipCount)
+					value = GSLookupGetSkipCountFunctionId(str_value);
+				else if (id.value() == GameDatabaseSchema::GSHWFixId::BeforeDraw)
+					value = GSLookupBeforeDrawFunctionId(str_value);
+
+				if (value.value_or(-1) < 0)
+				{
+					Console.Error(fmt::format("[GameDB] Invalid GS HW Fix Value for '{}' in '{}': '{}'", id_name, serial, str_value));
+					continue;
+				}
+			}
+			else
+			{
+				value = n.has_val() ? StringUtil::FromChars<s32>(std::string_view(n.val().data(), n.val().size())) : 1;
+			}
 			if (!id.has_value() || !value.has_value())
 			{
-				Console.Error("[GameDB] Invalid GS HW Fix: '%.*s' specified for serial '%.*s'. Dropping!",
-					static_cast<int>(id_name.size()), id_name.data(),
-					static_cast<int>(serial.size()), serial.data());
+				Console.Error(fmt::format("[GameDB] Invalid GS HW Fix: '{}' specified for serial '{}'. Dropping!", id_name, serial));
 				continue;
 			}
 
@@ -265,21 +308,53 @@ void GameDatabase::parseAndInsert(const std::string_view& serial, const c4::yml:
 		}
 	}
 
+	if (node.has_child("dynaPatches") && node["dynaPatches"].has_children())
+	{
+		for (const ryml::NodeRef& n : node["dynaPatches"].children())
+		{
+			DynamicPatch patch;
+
+			if (n.has_child("pattern") && n["pattern"].has_children())
+			{
+				for (const ryml::NodeRef& db_pattern : n["pattern"].children())
+				{
+					DynamicPatchEntry entry;
+					db_pattern["offset"] >> entry.offset;
+					db_pattern["value"] >> entry.value;
+
+					patch.pattern.push_back(entry);
+				}
+				for (const ryml::NodeRef& db_replacement : n["replacement"].children())
+				{
+					DynamicPatchEntry entry;
+					db_replacement["offset"] >> entry.offset;
+					db_replacement["value"] >> entry.value;
+
+					patch.replacement.push_back(entry);
+				}
+			}
+			gameEntry.dynaPatches.push_back(patch);
+		}
+	}
+
 	s_game_db.emplace(std::move(serial), std::move(gameEntry));
 }
 
 static const char* s_gs_hw_fix_names[] = {
 	"autoFlush",
 	"cpuFramebufferConversion",
+	"readTCOnClose",
 	"disableDepthSupport",
-	"wrapGSMem",
 	"preloadFrameData",
 	"disablePartialInvalidation",
+	"partialTargetInvalidation",
 	"textureInsideRT",
 	"alignSprite",
 	"mergeSprite",
 	"wildArmsHack",
-	"pointListPalette",
+	"estimateTextureRegion",
+	"PCRTCOffsets",
+	"PCRTCOverscan",
 	"mipmap",
 	"trilinearFiltering",
 	"skipDrawStart",
@@ -290,6 +365,14 @@ static const char* s_gs_hw_fix_names[] = {
 	"texturePreloading",
 	"deinterlace",
 	"cpuSpriteRenderBW",
+	"cpuCLUTRender",
+	"gpuTargetCLUT",
+	"gpuPaletteConversion",
+	"minimumBlendingLevel",
+	"maximumBlendingLevel",
+	"recommendedBlendingLevel",
+	"getSkipCount",
+	"beforeDraw"
 };
 static_assert(std::size(s_gs_hw_fix_names) == static_cast<u32>(GameDatabaseSchema::GSHWFixId::Count), "HW fix name lookup is correct size");
 
@@ -316,15 +399,15 @@ bool GameDatabaseSchema::isUserHackHWFix(GSHWFixId id)
 		case GSHWFixId::Deinterlace:
 		case GSHWFixId::Mipmap:
 		case GSHWFixId::TexturePreloading:
-		case GSHWFixId::PointListPalette:
-			return false;
-
-#ifdef PCSX2_CORE
-			// Trifiltering isn't a hack in Qt.
 		case GSHWFixId::TrilinearFiltering:
+		case GSHWFixId::MinimumBlendingLevel:
+		case GSHWFixId::MaximumBlendingLevel:
+		case GSHWFixId::RecommendedBlendingLevel:
+		case GSHWFixId::PCRTCOffsets:
+		case GSHWFixId::PCRTCOverscan:
+		case GSHWFixId::GetSkipCount:
+		case GSHWFixId::BeforeDraw:
 			return false;
-#endif
-
 		default:
 			return true;
 	}
@@ -354,19 +437,35 @@ u32 GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool appl
 		}
 	}
 
-	if (vuRoundMode != GameDatabaseSchema::RoundMode::Undefined)
+	if (vu0RoundMode != GameDatabaseSchema::RoundMode::Undefined)
 	{
-		const SSE_RoundMode vuRM = (SSE_RoundMode)enum_cast(vuRoundMode);
+		const SSE_RoundMode vuRM = (SSE_RoundMode)enum_cast(vu0RoundMode);
 		if (EnumIsValid(vuRM))
 		{
 			if (applyAuto)
 			{
-				PatchesCon->WriteLn("(GameDB) Changing VU0/VU1 roundmode to %d [%s]", vuRM, EnumToString(vuRM));
-				config.Cpu.sseVUMXCSR.SetRoundMode(vuRM);
+				PatchesCon->WriteLn("(GameDB) Changing VU0 roundmode to %d [%s]", vuRM, EnumToString(vuRM));
+				config.Cpu.sseVU0MXCSR.SetRoundMode(vuRM);
 				num_applied_fixes++;
 			}
 			else
-				PatchesCon->Warning("[GameDB] Skipping changing VU0/VU1 roundmode to %d [%s]", vuRM, EnumToString(vuRM));
+				PatchesCon->Warning("[GameDB] Skipping changing VU0 roundmode to %d [%s]", vuRM, EnumToString(vuRM));
+		}
+	}
+
+	if (vu1RoundMode != GameDatabaseSchema::RoundMode::Undefined)
+	{
+		const SSE_RoundMode vuRM = (SSE_RoundMode)enum_cast(vu1RoundMode);
+		if (EnumIsValid(vuRM))
+		{
+			if (applyAuto)
+			{
+				PatchesCon->WriteLn("(GameDB) Changing VU1 roundmode to %d [%s]", vuRM, EnumToString(vuRM));
+				config.Cpu.sseVU1MXCSR.SetRoundMode(vuRM);
+				num_applied_fixes++;
+			}
+			else
+				PatchesCon->Warning("[GameDB] Skipping changing VU1 roundmode to %d [%s]", vuRM, EnumToString(vuRM));
 		}
 	}
 
@@ -385,19 +484,34 @@ u32 GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool appl
 			PatchesCon->Warning("[GameDB] Skipping changing EE/FPU clamp mode [mode=%d]", clampMode);
 	}
 
-	if (vuClampMode != GameDatabaseSchema::ClampMode::Undefined)
+	if (vu0ClampMode != GameDatabaseSchema::ClampMode::Undefined)
 	{
-		const int clampMode = enum_cast(vuClampMode);
+		const int clampMode = enum_cast(vu0ClampMode);
 		if (applyAuto)
 		{
-			PatchesCon->WriteLn("(GameDB) Changing VU0/VU1 clamp mode [mode=%d]", clampMode);
-			config.Cpu.Recompiler.vuOverflow = (clampMode >= 1);
-			config.Cpu.Recompiler.vuExtraOverflow = (clampMode >= 2);
-			config.Cpu.Recompiler.vuSignOverflow = (clampMode >= 3);
+			PatchesCon->WriteLn("(GameDB) Changing VU0 clamp mode [mode=%d]", clampMode);
+			config.Cpu.Recompiler.vu0Overflow = (clampMode >= 1);
+			config.Cpu.Recompiler.vu0ExtraOverflow = (clampMode >= 2);
+			config.Cpu.Recompiler.vu0SignOverflow = (clampMode >= 3);
 			num_applied_fixes++;
 		}
 		else
-			PatchesCon->Warning("[GameDB] Skipping changing VU0/VU1 clamp mode [mode=%d]", clampMode);
+			PatchesCon->Warning("[GameDB] Skipping changing VU0 clamp mode [mode=%d]", clampMode);
+	}
+
+	if (vu1ClampMode != GameDatabaseSchema::ClampMode::Undefined)
+	{
+		const int clampMode = enum_cast(vu1ClampMode);
+		if (applyAuto)
+		{
+			PatchesCon->WriteLn("(GameDB) Changing VU1 clamp mode [mode=%d]", clampMode);
+			config.Cpu.Recompiler.vu1Overflow = (clampMode >= 1);
+			config.Cpu.Recompiler.vu1ExtraOverflow = (clampMode >= 2);
+			config.Cpu.Recompiler.vu1SignOverflow = (clampMode >= 3);
+			num_applied_fixes++;
+		}
+		else
+			PatchesCon->Warning("[GameDB] Skipping changing VU1 clamp mode [mode=%d]", clampMode);
 	}
 
 	// TODO - config - this could be simplified with maps instead of bitfields and enums
@@ -437,7 +551,7 @@ u32 GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool appl
 	return num_applied_fixes;
 }
 
-bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOptions& config, GSHWFixId id, int value) const
+bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOptions& config, GSHWFixId id, int value)
 {
 	switch (id)
 	{
@@ -447,11 +561,11 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::CPUFramebufferConversion:
 			return (static_cast<int>(config.UserHacks_CPUFBConversion) == value);
 
+		case GSHWFixId::FlushTCOnClose:
+			return (static_cast<int>(config.UserHacks_ReadTCOnClose) == value);
+
 		case GSHWFixId::DisableDepthSupport:
 			return (static_cast<int>(config.UserHacks_DisableDepthSupport) == value);
-
-		case GSHWFixId::WrapGSMem:
-			return (static_cast<int>(config.WrapGSMem) == value);
 
 		case GSHWFixId::PreloadFrameData:
 			return (static_cast<int>(config.PreloadFrameWithGSData) == value);
@@ -459,26 +573,35 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::DisablePartialInvalidation:
 			return (static_cast<int>(config.UserHacks_DisablePartialInvalidation) == value);
 
+		case GSHWFixId::TargetPartialInvalidation:
+			return (static_cast<int>(config.UserHacks_TargetPartialInvalidation) == value);
+
 		case GSHWFixId::TextureInsideRT:
 			return (static_cast<int>(config.UserHacks_TextureInsideRt) == value);
 
 		case GSHWFixId::AlignSprite:
-			return (config.UpscaleMultiplier == 1 || static_cast<int>(config.UserHacks_AlignSpriteX) == value);
+			return (config.UpscaleMultiplier <= 1.0f || static_cast<int>(config.UserHacks_AlignSpriteX) == value);
 
 		case GSHWFixId::MergeSprite:
-			return (config.UpscaleMultiplier == 1 || static_cast<int>(config.UserHacks_MergePPSprite) == value);
+			return (config.UpscaleMultiplier <= 1.0f || static_cast<int>(config.UserHacks_MergePPSprite) == value);
 
 		case GSHWFixId::WildArmsHack:
-			return (config.UpscaleMultiplier == 1 || static_cast<int>(config.UserHacks_WildHack) == value);
+			return (config.UpscaleMultiplier <= 1.0f || static_cast<int>(config.UserHacks_WildHack) == value);
 
-		case GSHWFixId::PointListPalette:
-			return (static_cast<int>(config.PointListPalette) == value);
+		case GSHWFixId::EstimateTextureRegion:
+			return (static_cast<int>(config.UserHacks_EstimateTextureRegion) == value);
+
+		case GSHWFixId::PCRTCOffsets:
+			return (static_cast<int>(config.PCRTCOffsets) == value);
+
+		case GSHWFixId::PCRTCOverscan:
+			return (static_cast<int>(config.PCRTCOverscan) == value);
 
 		case GSHWFixId::Mipmap:
 			return (config.HWMipmap == HWMipmapLevel::Automatic || static_cast<int>(config.HWMipmap) == value);
 
 		case GSHWFixId::TrilinearFiltering:
-			return (config.UserHacks_TriFilter == TriFiltering::Automatic || static_cast<int>(config.UserHacks_TriFilter) == value);
+			return (config.TriFilter == TriFiltering::Automatic || static_cast<int>(config.TriFilter) == value);
 
 		case GSHWFixId::SkipDrawStart:
 			return (config.SkipDrawStart == value);
@@ -490,10 +613,10 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 			return (config.UserHacks_HalfBottomOverride == value);
 
 		case GSHWFixId::HalfPixelOffset:
-			return (config.UpscaleMultiplier == 1 || config.UserHacks_HalfPixelOffset == value);
+			return (config.UpscaleMultiplier <= 1.0f || config.UserHacks_HalfPixelOffset == value);
 
 		case GSHWFixId::RoundSprite:
-			return (config.UpscaleMultiplier == 1 || config.UserHacks_RoundSprite == value);
+			return (config.UpscaleMultiplier <= 1.0f || config.UserHacks_RoundSprite == value);
 
 		case GSHWFixId::TexturePreloading:
 			return (static_cast<int>(config.TexturePreloading) <= value);
@@ -503,6 +626,30 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 
 		case GSHWFixId::CPUSpriteRenderBW:
 			return (config.UserHacks_CPUSpriteRenderBW == value);
+
+		case GSHWFixId::CPUCLUTRender:
+			return (config.UserHacks_CPUCLUTRender == value);
+
+		case GSHWFixId::GPUTargetCLUT:
+			return (static_cast<int>(config.UserHacks_GPUTargetCLUTMode) == value);
+
+		case GSHWFixId::GPUPaletteConversion:
+			return (config.GPUPaletteConversion == ((value > 1) ? (config.TexturePreloading == TexturePreloadingLevel::Full) : (value != 0)));
+
+		case GSHWFixId::MinimumBlendingLevel:
+			return (static_cast<int>(config.AccurateBlendingUnit) >= value);
+
+		case GSHWFixId::MaximumBlendingLevel:
+			return (static_cast<int>(config.AccurateBlendingUnit) <= value);
+
+		case GSHWFixId::RecommendedBlendingLevel:
+			return true;
+
+		case GSHWFixId::GetSkipCount:
+			return (static_cast<int>(config.GetSkipCountFunctionId) == value);
+
+		case GSHWFixId::BeforeDraw:
+			return (static_cast<int>(config.BeforeDrawFunctionId) == value);
 
 		default:
 			return false;
@@ -541,12 +688,12 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 				config.UserHacks_CPUFBConversion = (value > 0);
 				break;
 
-			case GSHWFixId::DisableDepthSupport:
-				config.UserHacks_DisableDepthSupport = (value > 0);
+			case GSHWFixId::FlushTCOnClose:
+				config.UserHacks_ReadTCOnClose = (value > 0);
 				break;
 
-			case GSHWFixId::WrapGSMem:
-				config.WrapGSMem = (value > 0);
+			case GSHWFixId::DisableDepthSupport:
+				config.UserHacks_DisableDepthSupport = (value > 0);
 				break;
 
 			case GSHWFixId::PreloadFrameData:
@@ -557,9 +704,16 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 				config.UserHacks_DisablePartialInvalidation = (value > 0);
 				break;
 
-			case GSHWFixId::TextureInsideRT:
-				config.UserHacks_TextureInsideRt = (value > 0);
+			case GSHWFixId::TargetPartialInvalidation:
+				config.UserHacks_TargetPartialInvalidation = (value > 0);
 				break;
+
+			case GSHWFixId::TextureInsideRT:
+			{
+				if (value >= 0 && value <= static_cast<int>(GSTextureInRtMode::MergeTargets))
+					config.UserHacks_TextureInsideRt = static_cast<GSTextureInRtMode>(value);
+			}
+			break;
 
 			case GSHWFixId::AlignSprite:
 				config.UserHacks_AlignSpriteX = (value > 0);
@@ -573,8 +727,16 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 				config.UserHacks_WildHack = (value > 0);
 				break;
 
-			case GSHWFixId::PointListPalette:
-				config.PointListPalette = (value > 0);
+			case GSHWFixId::EstimateTextureRegion:
+				config.UserHacks_EstimateTextureRegion = (value > 0);
+				break;
+
+			case GSHWFixId::PCRTCOffsets:
+				config.PCRTCOffsets = (value > 0);
+				break;
+
+			case GSHWFixId::PCRTCOverscan:
+				config.PCRTCOverscan = (value > 0);
 				break;
 
 			case GSHWFixId::Mipmap:
@@ -593,9 +755,9 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 			{
 				if (value >= 0 && value <= static_cast<int>(TriFiltering::Forced))
 				{
-					if (config.UserHacks_TriFilter == TriFiltering::Automatic)
-						config.UserHacks_TriFilter = static_cast<TriFiltering>(value);
-					else if (config.UserHacks_TriFilter == TriFiltering::Off)
+					if (config.TriFilter == TriFiltering::Automatic)
+						config.TriFilter = static_cast<TriFiltering>(value);
+					else if (config.TriFilter == TriFiltering::Off)
 						Console.Warning("[GameDB] Game requires trilinear filtering but it has been force disabled.");
 				}
 			}
@@ -630,7 +792,7 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 
 			case GSHWFixId::Deinterlace:
 			{
-				if (value >= 0 && value <= static_cast<int>(GSInterlaceMode::Automatic))
+				if (value >= static_cast<int>(GSInterlaceMode::Automatic) && value < static_cast<int>(GSInterlaceMode::Count))
 				{
 					if (config.InterlaceMode == GSInterlaceMode::Automatic)
 						config.InterlaceMode = static_cast<GSInterlaceMode>(value);
@@ -644,6 +806,69 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 				config.UserHacks_CPUSpriteRenderBW = value;
 				break;
 
+			case GSHWFixId::CPUCLUTRender:
+				config.UserHacks_CPUCLUTRender = value;
+				break;
+
+			case GSHWFixId::GPUTargetCLUT:
+			{
+				if (value >= 0 && value <= static_cast<int>(GSGPUTargetCLUTMode::InsideTarget))
+					config.UserHacks_GPUTargetCLUTMode = static_cast<GSGPUTargetCLUTMode>(value);
+			}
+			break;
+
+			case GSHWFixId::GPUPaletteConversion:
+			{
+				// if 2, enable paltex when preloading is full, otherwise leave as-is
+				if (value > 1)
+					config.GPUPaletteConversion = (config.TexturePreloading == TexturePreloadingLevel::Full) ? true : config.GPUPaletteConversion;
+				else
+					config.GPUPaletteConversion = (value != 0);
+			}
+			break;
+
+			case GSHWFixId::MinimumBlendingLevel:
+			{
+				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
+					config.AccurateBlendingUnit = std::max(config.AccurateBlendingUnit, static_cast<AccBlendLevel>(value));
+			}
+			break;
+
+			case GSHWFixId::MaximumBlendingLevel:
+			{
+				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
+					config.AccurateBlendingUnit = std::min(config.AccurateBlendingUnit, static_cast<AccBlendLevel>(value));
+			}
+			break;
+
+			case GSHWFixId::RecommendedBlendingLevel:
+			{
+				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum) && static_cast<int>(EmuConfig.GS.AccurateBlendingUnit) < value)
+				{
+					Host::AddKeyedOSDMessage("HWBlendingWarning",
+						fmt::format(ICON_FA_PAINT_BRUSH " Current Blending Accuracy is {}.\n"
+														"Recommended Blending Accuracy for this game is {}.\n"
+														"You can adjust the blending level in Game Properties to improve\n"
+														"graphical quality, but this will increase system requirements.",
+							Pcsx2Config::GSOptions::BlendingLevelNames[static_cast<int>(EmuConfig.GS.AccurateBlendingUnit)],
+							Pcsx2Config::GSOptions::BlendingLevelNames[value]),
+						Host::OSD_WARNING_DURATION);
+				}
+				else
+				{
+					Host::RemoveKeyedOSDMessage("HWBlendingWarning");
+				}
+			}
+			break;
+
+			case GSHWFixId::GetSkipCount:
+				config.GetSkipCountFunctionId = static_cast<s16>(value);
+				break;
+
+			case GSHWFixId::BeforeDraw:
+				config.BeforeDrawFunctionId = static_cast<s16>(value);
+				break;
+
 			default:
 				break;
 		}
@@ -655,19 +880,17 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 	// fixup skipdraw range just in case the db has a bad range (but the linter should catch this)
 	config.SkipDrawEnd = std::max(config.SkipDrawStart, config.SkipDrawEnd);
 
-#ifdef PCSX2_CORE
 	if (!disabled_fixes.empty())
 	{
 		Host::AddKeyedOSDMessage("HWFixesWarning",
-			fmt::format("Manual GS hardware renderer fixes are enabled, automatic fixes were not applied:\n{}",
+			fmt::format(ICON_FA_MAGIC " Manual GS hardware renderer fixes are enabled, automatic fixes were not applied:\n{}",
 				disabled_fixes),
-			10.0f);
+			Host::OSD_ERROR_DURATION);
 	}
 	else
 	{
 		Host::RemoveKeyedOSDMessage("HWFixesWarning");
 	}
-#endif
 
 	return num_applied_fixes;
 }
@@ -737,6 +960,10 @@ const GameDatabaseSchema::GameEntry* GameDatabase::findGame(const std::string_vi
 	GameDatabase::ensureLoaded();
 
 	std::string serialLower = StringUtil::toLower(serial);
+
+	if (serialLower.empty())
+		return nullptr;
+
 	Console.WriteLn(fmt::format("[GameDB] Searching for '{}' in GameDB", serialLower));
 	const auto gameEntry = s_game_db.find(serialLower);
 	if (gameEntry != s_game_db.end())

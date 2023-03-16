@@ -49,7 +49,7 @@ CreateMemoryCardDialog::CreateMemoryCardDialog(QWidget* parent /* = nullptr */)
 	connect(m_ui.buttonBox->button(QDialogButtonBox::Cancel), &QPushButton::clicked, this, &CreateMemoryCardDialog::close);
 	connect(m_ui.buttonBox->button(QDialogButtonBox::RestoreDefaults), &QPushButton::clicked, this, &CreateMemoryCardDialog::restoreDefaults);
 
-#ifdef _WIN32
+#ifndef _WIN32
 	m_ui.ntfsCompression->setEnabled(false);
 #endif
 
@@ -122,14 +122,14 @@ void CreateMemoryCardDialog::createCard()
 	if (FileMcd_GetCardInfo(nameStr).has_value())
 	{
 		QMessageBox::critical(this, tr("Create Memory Card"),
-			tr("Failed to create the memory card, because another card with the name '%1' already exists.").arg(name));
+			tr("Failed to create the Memory Card, because another card with the name '%1' already exists.").arg(name));
 		return;
 	}
 
 	if (!FileMcd_CreateNewCard(nameStr, m_type, m_fileType))
 	{
 		QMessageBox::critical(this, tr("Create Memory Card"),
-			tr("Failed to create the memory card, the log may contain more information."));
+			tr("Failed to create the Memory Card, the log may contain more information."));
 		return;
 	}
 
@@ -141,6 +141,6 @@ void CreateMemoryCardDialog::createCard()
 	}
 #endif
 
-	QMessageBox::information(this, tr("Create Memory Card"), tr("Memory card '%1' created.").arg(name));
+	QMessageBox::information(this, tr("Create Memory Card"), tr("Memory Card '%1' created.").arg(name));
 	accept();
 }

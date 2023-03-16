@@ -60,7 +60,10 @@ namespace GL
 		GLint info_log_length = 0;
 		glGetShaderiv(id, GL_INFO_LOG_LENGTH, &info_log_length);
 
-		if (status == GL_FALSE || info_log_length > 0)
+		// Log will create a new line when there are no warnings so let's set a minimum log length of 1.
+		constexpr int info_log_min_length = 1;
+
+		if (status == GL_FALSE || info_log_length > info_log_min_length)
 		{
 			std::string info_log;
 			info_log.resize(info_log_length + 1);
@@ -74,7 +77,7 @@ namespace GL
 			{
 				Console.Error("Shader failed to compile:\n%s", info_log.c_str());
 
-				std::ofstream ofs(StringUtil::StdStringFromFormat("bad_shader_%u.txt", s_next_bad_shader_id++).c_str(),
+				std::ofstream ofs(StringUtil::StdStringFromFormat("pcsx2_bad_shader_%u.txt", s_next_bad_shader_id++).c_str(),
 					std::ofstream::out | std::ofstream::binary);
 				if (ofs.is_open())
 				{
@@ -134,6 +137,17 @@ namespace GL
 			glAttachShader(m_program_id, geometry_shader_id);
 		if (fragment_shader_id != 0)
 			glAttachShader(m_program_id, fragment_shader_id);
+		return true;
+	}
+
+	bool Program::CompileCompute(const std::string_view glsl)
+	{
+		GLuint id = CompileShader(GL_COMPUTE_SHADER, glsl);
+		if (id == 0)
+			return false;
+
+		m_program_id = glCreateProgram();
+		glAttachShader(m_program_id, id);
 		return true;
 	}
 
@@ -238,9 +252,13 @@ namespace GL
 		glGetProgramiv(m_program_id, GL_LINK_STATUS, &status);
 
 		GLint info_log_length = 0;
+
+		// Log will create a new line when there are no warnings so let's set a minimum log length of 1.
+		constexpr int info_log_min_length = 1;
+
 		glGetProgramiv(m_program_id, GL_INFO_LOG_LENGTH, &info_log_length);
 
-		if (status == GL_FALSE || info_log_length > 0)
+		if (status == GL_FALSE || info_log_length > info_log_min_length)
 		{
 			std::string info_log;
 			info_log.resize(info_log_length + 1);

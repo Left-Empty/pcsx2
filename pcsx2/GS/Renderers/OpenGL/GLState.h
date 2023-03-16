@@ -18,6 +18,8 @@
 #include "GS/Renderers/OpenGL/GLLoader.h"
 #include "GS/GSVector.h"
 
+class GSTextureOGL;
+
 namespace GLState
 {
 	extern GLuint fbo; // frame buffer object
@@ -25,6 +27,7 @@ namespace GLState
 	extern GSVector4i scissor;
 
 	extern bool point_size;
+	extern float line_width;
 
 	extern bool blend;
 	extern u16 eq_RGB;
@@ -43,12 +46,10 @@ namespace GLState
 
 	extern GLuint ps_ss; // sampler
 
-	extern GLuint rt; // render target
-	extern GLuint ds; // Depth-Stencil
+	extern GSTextureOGL* rt; // render target
+	extern GSTextureOGL* ds; // Depth-Stencil
 	extern GLuint tex_unit[8]; // shader input texture
 	extern GLuint64 tex_handle[8]; // shader input texture
-
-	extern s64 available_vram;
 
 	extern void Clear();
 } // namespace GLState

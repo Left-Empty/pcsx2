@@ -26,6 +26,7 @@
 
 #include "updater/UpdaterExtractor.h"
 
+#include "common/CocoaTools.h"
 #include "common/Console.h"
 #include "common/FileSystem.h"
 #include "common/StringUtil.h"
@@ -47,18 +48,25 @@
 
 // Logic to detect whether we can use the auto updater.
 // We use tagged commit, because this gets set on nightly builds.
-#if (defined(_WIN32)) && (defined(GIT_TAGGED_COMMIT) && GIT_TAGGED_COMMIT)
+#if (defined(_WIN32) || defined(__linux__) || defined(__APPLE__)) && defined(GIT_TAG_LO)
 
-#define AUTO_UPDATER_SUPPORTED 1
+	#define AUTO_UPDATER_SUPPORTED 1
 
-#if defined(_WIN32)
-#define UPDATE_PLATFORM_STR "Windows"
-#if _M_SSE >= 0x500
-#define UPDATE_ADDITIONAL_TAGS "AVX2"
-#else
-#define UPDATE_ADDITIONAL_TAGS "SSE4"
-#endif
-#endif
+	#if defined(_WIN32)
+		#define UPDATE_PLATFORM_STR "Windows"
+	#elif defined(__linux__)
+		#define UPDATE_PLATFORM_STR "Linux"
+	#elif defined(__APPLE__)
+		#define UPDATE_PLATFORM_STR "MacOS"
+	#endif
+
+	#ifdef MULTI_ISA_SHARED_COMPILATION
+		// #undef UPDATE_ADDITIONAL_TAGS
+	#elif _M_SSE >= 0x501
+		#define UPDATE_ADDITIONAL_TAGS "AVX2"
+	#else
+		#define UPDATE_ADDITIONAL_TAGS "SSE4"
+	#endif
 
 #endif
 
@@ -94,7 +102,19 @@ AutoUpdaterDialog::~AutoUpdaterDialog() = default;
 bool AutoUpdaterDialog::isSupported()
 {
 #ifdef AUTO_UPDATER_SUPPORTED
+#ifdef __linux__
+	// For Linux, we need to check whether we're running from the appimage.
+	if (!std::getenv("APPIMAGE"))
+	{
+		Console.Warning("We're a tagged commit, but not running from an AppImage. Disabling automatic updater.");
+		return false;
+	}
+
 	return true;
+#else
+	// Windows, MacOS - always supported.
+	return true;
+#endif
 #else
 	return false;
 #endif
@@ -147,6 +167,7 @@ void AutoUpdaterDialog::reportError(const char* msg, ...)
 	va_end(ap);
 
 	// don't display errors when we're doing an automatic background check, it's just annoying
+	Console.Error("Updater Error: %s", full_msg.c_str());
 	if (m_display_messages)
 		QMessageBox::critical(this, tr("Updater Error"), QString::fromStdString(full_msg));
 }
@@ -192,58 +213,85 @@ void AutoUpdaterDialog::getLatestReleaseComplete(QNetworkReply* reply)
 				const QJsonArray platform_array(assets_object[UPDATE_PLATFORM_STR].toArray());
 				if (!platform_array.isEmpty())
 				{
-					// search for the correct file
+					QJsonObject best_asset;
+					int best_asset_score = 0;
+
+					// search for usable files
 					for (const QJsonValue& asset_value : platform_array)
 					{
 						const QJsonObject asset_object(asset_value.toObject());
 						const QJsonArray additional_tags_array(asset_object["additionalTags"].toArray());
-						bool is_matching_asset = false;
+						bool is_symbols = false;
+						bool is_avx2 = false;
+						bool is_sse4 = false;
 						bool is_qt_asset = false;
+						bool is_perfect_match = false;
 						for (const QJsonValue& additional_tag : additional_tags_array)
 						{
 							const QString additional_tag_str(additional_tag.toString());
 							if (additional_tag_str == QStringLiteral("symbols"))
 							{
 								// we're not interested in symbols downloads
-								is_matching_asset = false;
+								is_symbols = true;
 								break;
 							}
-							else if (additional_tag_str == QStringLiteral("Qt"))
+							else if (additional_tag_str.startsWith(QStringLiteral("Qt")))
 							{
 								// found a qt build
+								// Note: The website improperly parses macOS file names, and gives them the tag "Qt.tar" instead of "Qt"
 								is_qt_asset = true;
 							}
-
-							// is this the right variant?
+							else if (additional_tag_str == QStringLiteral("SSE4"))
+							{
+								is_sse4 = true;
+							}
+							else if (additional_tag_str == QStringLiteral("AVX2"))
+							{
+								is_avx2 = true;
+							}
+#ifdef UPDATE_ADDITIONAL_TAGS
 							if (additional_tag_str == QStringLiteral(UPDATE_ADDITIONAL_TAGS))
 							{
-								// yep! found the right one. but keep checking in case it's symbols.
-								is_matching_asset = true;
+								// Found the same variant as what's currently running!  But keep checking in case it's symbols.
+								is_perfect_match = true;
 							}
+#endif
 						}
 
-						if (!is_qt_asset || !is_matching_asset)
+						if (!is_qt_asset || is_symbols || (!x86caps.hasAVX2 && is_avx2))
 						{
 							// skip this asset
 							continue;
 						}
 
-						m_latest_version = data_object["version"].toString();
-						m_latest_version_timestamp = QDateTime::fromString(data_object["publishedAt"].toString(), QStringLiteral("yyyy-MM-ddThh:mm:ss.zzzZ"));
-						m_download_url = asset_object["url"].toString();
-						if (!m_latest_version.isEmpty() && !m_download_url.isEmpty())
-						{
-							found_update_info = true;
-							break;
-						}
+						int score;
+						if (is_perfect_match)
+							score = 4; // #1 choice is the one matching this binary
+						else if (is_avx2)
+							score = 3; // Prefer AVX2 over SSE4 (support test was done above)
+						else if (is_sse4)
+							score = 2; // Prefer SSE4 over one with no tags at all
 						else
+							score = 1; // Multi-ISA builds will have no tags, they'll only get picked because they're the only available build
+
+						if (score > best_asset_score)
 						{
-							reportError("missing version/download info");
+							best_asset = std::move(asset_object);
+							best_asset_score = score;
 						}
 					}
 
-					if (!found_update_info)
-						reportError("matching asset not found");
+					if (best_asset_score == 0)
+					{
+						reportError("no matching assets found");
+					}
+					else
+					{
+						m_latest_version = data_object["version"].toString();
+						m_latest_version_timestamp = QDateTime::fromString(data_object["publishedAt"].toString(), QStringLiteral("yyyy-MM-ddThh:mm:ss.zzzZ"));
+						m_download_url = best_asset["url"].toString();
+						found_update_info = true;
+					}
 				}
 				else
 				{
@@ -315,6 +363,13 @@ void AutoUpdaterDialog::getChangesComplete(QNetworkReply* reply)
 
 				QString message = commit_obj["message"].toString();
 				QString author = commit_obj["author"].toObject()["name"].toString();
+
+				if (message.contains(QStringLiteral("[SAVEVERSION+]")))
+					update_will_break_save_states = true;
+
+				if (message.contains(QStringLiteral("[SETTINGSVERSION+]")))
+					update_increases_settings_version = true;
+
 				const int first_line_terminator = message.indexOf('\n');
 				if (first_line_terminator >= 0)
 					message.remove(first_line_terminator, message.size() - first_line_terminator);
@@ -323,12 +378,6 @@ void AutoUpdaterDialog::getChangesComplete(QNetworkReply* reply)
 					changes_html +=
 						QStringLiteral("<li>%1 <i>(%2)</i></li>").arg(message.toHtmlEscaped()).arg(author.toHtmlEscaped());
 				}
-
-				if (message.contains(QStringLiteral("[SAVEVERSION+]")))
-					update_will_break_save_states = true;
-
-				if (message.contains(QStringLiteral("[SETTINGSVERSION+]")))
-					update_increases_settings_version = true;
 			}
 
 			changes_html += "</ul>";
@@ -336,7 +385,7 @@ void AutoUpdaterDialog::getChangesComplete(QNetworkReply* reply)
 			if (update_will_break_save_states)
 			{
 				changes_html.prepend(tr("<h2>Save State Warning</h2><p>Installing this update will make your save states "
-										"<b>incompatible</b>. Please ensure you have saved your games to memory card "
+										"<b>incompatible</b>. Please ensure you have saved your games to a Memory Card "
 										"before installing this update or you will lose progress.</p>"));
 			}
 
@@ -365,6 +414,7 @@ void AutoUpdaterDialog::getChangesComplete(QNetworkReply* reply)
 
 void AutoUpdaterDialog::downloadUpdateClicked()
 {
+	m_display_messages = true;
 	QUrl url(m_download_url);
 	QNetworkRequest request(url);
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
@@ -400,7 +450,7 @@ void AutoUpdaterDialog::downloadUpdateClicked()
 			return;
 		}
 
-		if (processUpdate(data))
+		if (processUpdate(data, progress))
 			progress.done(1);
 		else
 			progress.done(-1);
@@ -415,7 +465,7 @@ void AutoUpdaterDialog::downloadUpdateClicked()
 	else if (result == 1)
 	{
 		// updater started. since we're a modal on the main window, we have to queue this.
-		QMetaObject::invokeMethod(g_main_window, &MainWindow::requestExit, Qt::QueuedConnection);
+		QMetaObject::invokeMethod(g_main_window, "requestExit", Qt::QueuedConnection, Q_ARG(bool, true));
 		done(0);
 	}
 
@@ -445,6 +495,16 @@ void AutoUpdaterDialog::checkIfUpdateNeeded()
 
 	Console.WriteLn(Color_StrongRed, "Update needed.");
 
+	// Don't show the dialog if a game started while the update info was downloading. Some people have
+	// really slow connections, apparently. If we're a manual triggered update check, then display
+	// regardless. This will fall through and signal main to delete us.
+	if (!m_display_messages &&
+		(QtHost::IsVMValid() || (g_emu_thread->isRunningFullscreenUI() && g_emu_thread->isFullscreen())))
+	{
+		Console.WriteLn(Color_StrongRed, "Not showing update dialog due to active VM.");
+		return;
+	}
+
 	m_ui.currentVersion->setText(tr("Current Version: %1 (%2)").arg(getCurrentVersion()).arg(getCurrentVersionDate()));
 	m_ui.newVersion->setText(tr("New Version: %1 (%2)").arg(m_latest_version).arg(m_latest_version_timestamp.toString()));
 	m_ui.updateNotes->setText(tr("Loading..."));
@@ -454,7 +514,8 @@ void AutoUpdaterDialog::checkIfUpdateNeeded()
 
 void AutoUpdaterDialog::skipThisUpdateClicked()
 {
-	QtHost::SetBaseStringSettingValue("AutoUpdater", "LastVersion", m_latest_version.toUtf8().constData());
+	Host::SetBaseStringSettingValue("AutoUpdater", "LastVersion", m_latest_version.toUtf8().constData());
+	Host::CommitBaseSettingChanges();
 	done(0);
 }
 
@@ -463,9 +524,9 @@ void AutoUpdaterDialog::remindMeLaterClicked()
 	done(0);
 }
 
-#ifdef _WIN32
+#if defined(_WIN32)
 
-bool AutoUpdaterDialog::processUpdate(const QByteArray& update_data)
+bool AutoUpdaterDialog::processUpdate(const QByteArray& update_data, QProgressDialog&)
 {
 	const QString update_directory = QCoreApplication::applicationDirPath();
 	const QString update_zip_path = QStringLiteral("%1" FS_OSPATH_SEPARATOR_STR "%2").arg(update_directory).arg(UPDATER_ARCHIVE_NAME);
@@ -534,9 +595,203 @@ bool AutoUpdaterDialog::doUpdate(const QString& zip_path, const QString& updater
 	return true;
 }
 
+#elif defined(__linux__)
+
+bool AutoUpdaterDialog::processUpdate(const QByteArray& update_data, QProgressDialog&)
+{
+	const char* appimage_path = std::getenv("APPIMAGE");
+	if (!appimage_path || !FileSystem::FileExists(appimage_path))
+	{
+		reportError("Missing APPIMAGE.");
+		return false;
+	}
+
+	const QString qappimage_path(QString::fromUtf8(appimage_path));
+	if (!QFile::exists(qappimage_path))
+	{
+		reportError("Current AppImage does not exist: %s", appimage_path);
+		return false;
+	}
+
+	const QString new_appimage_path(qappimage_path + QStringLiteral(".new"));
+	const QString backup_appimage_path(qappimage_path + QStringLiteral(".backup"));
+	Console.WriteLn("APPIMAGE = %s", appimage_path);
+	Console.WriteLn("Backup AppImage path = %s", backup_appimage_path.toUtf8().constData());
+	Console.WriteLn("New AppImage path = %s", new_appimage_path.toUtf8().constData());
+
+	// Remove old "new" appimage and existing backup appimage.
+	if (QFile::exists(new_appimage_path) && !QFile::remove(new_appimage_path))
+	{
+		reportError("Failed to remove old destination AppImage: %s", new_appimage_path.toUtf8().constData());
+		return false;
+	}
+	if (QFile::exists(backup_appimage_path) && !QFile::remove(backup_appimage_path))
+	{
+		reportError("Failed to remove old backup AppImage: %s", new_appimage_path.toUtf8().constData());
+		return false;
+	}
+
+	// Write "new" appimage.
+	{
+		// We want to copy the permissions from the old appimage to the new one.
+		QFile old_file(qappimage_path);
+		const QFileDevice::Permissions old_permissions = old_file.permissions();
+		QFile new_file(new_appimage_path);
+		if (!new_file.open(QIODevice::WriteOnly) || new_file.write(update_data) != update_data.size() || !new_file.setPermissions(old_permissions))
+		{
+			QFile::remove(new_appimage_path);
+			reportError("Failed to write new destination AppImage: %s", new_appimage_path.toUtf8().constData());
+			return false;
+		}
+	}
+
+	// Rename "old" appimage.
+	if (!QFile::rename(qappimage_path, backup_appimage_path))
+	{
+		reportError("Failed to rename old AppImage to %s", backup_appimage_path.toUtf8().constData());
+		QFile::remove(new_appimage_path);
+		return false;
+	}
+
+	// Rename "new" appimage.
+	if (!QFile::rename(new_appimage_path, qappimage_path))
+	{
+		reportError("Failed to rename new AppImage to %s", qappimage_path.toUtf8().constData());
+		return false;
+	}
+
+	// Execute new appimage.
+	QProcess* new_process = new QProcess();
+	new_process->setProgram(qappimage_path);
+	if (!new_process->startDetached())
+	{
+		reportError("Failed to execute new AppImage.");
+		return false;
+	}
+
+	// We exit once we return.
+	return true;
+}
+
+#elif defined(__APPLE__)
+
+static QString UpdateVersionNumberInName(QString name, QStringView new_version)
+{
+	QString current_version_string = QStringLiteral(GIT_TAG);
+	QStringView current_version = current_version_string;
+	if (!current_version.empty() && !new_version.empty() && current_version[0] == 'v' && new_version[0] == 'v')
+	{
+		current_version = current_version.mid(1);
+		new_version = new_version.mid(1);
+	}
+	if (!current_version.empty() && !new_version.empty())
+		name.replace(current_version.data(), current_version.size(), new_version.data(), new_version.size());
+	return name;
+}
+
+bool AutoUpdaterDialog::processUpdate(const QByteArray& update_data, QProgressDialog& progress)
+{
+	std::optional<std::string> path = CocoaTools::GetNonTranslocatedBundlePath();
+	if (!path.has_value())
+	{
+		reportError("Couldn't get bundle path");
+		return false;
+	}
+
+	QFileInfo info(QString::fromStdString(*path));
+	if (!info.isBundle())
+	{
+		reportError("Application %s isn't a bundle", path->c_str());
+		return false;
+	}
+	if (info.suffix() != QStringLiteral("app"))
+	{
+		reportError("Unexpected application suffix %s on %s", info.suffix().toUtf8().constData(), path->c_str());
+		return false;
+	}
+	QString open_path;
+	{
+		QTemporaryDir temp_dir(info.path() + QStringLiteral("/PCSX2-UpdateStaging-XXXXXX"));
+		if (!temp_dir.isValid())
+		{
+			reportError("Failed to create update staging directory");
+			return false;
+		}
+
+		constexpr qsizetype chunk_size = 65536;
+		progress.setLabelText(QStringLiteral("Unpacking update..."));
+		progress.reset();
+		progress.setRange(0, static_cast<int>((update_data.size() + chunk_size - 1) / chunk_size));
+
+		QProcess untar;
+		untar.setProgram(QStringLiteral("/usr/bin/tar"));
+		untar.setArguments({QStringLiteral("xC"), temp_dir.path()});
+		untar.start();
+		for (qsizetype i = 0; i < update_data.size(); i += chunk_size)
+		{
+			progress.setValue(static_cast<int>(i / chunk_size));
+			const qsizetype amt = std::min(update_data.size() - i, chunk_size);
+			if (progress.wasCanceled() || untar.write(update_data.data() + i, amt) != amt)
+			{
+				if (!progress.wasCanceled())
+					reportError("Failed to unpack update (write stopped short)");
+				untar.closeWriteChannel();
+				if (!untar.waitForFinished(1000))
+					untar.kill();
+				return false;
+			}
+		}
+		untar.closeWriteChannel();
+		while (!untar.waitForFinished(1000))
+		{
+			if (progress.wasCanceled())
+			{
+				untar.kill();
+				return false;
+			}
+		}
+		progress.setValue(progress.maximum());
+		if (untar.exitCode() != EXIT_SUCCESS)
+		{
+			reportError("Failed to unpack update (tar exited with %u)", untar.exitCode());
+			return false;
+		}
+
+		QFileInfoList temp_dir_contents = QDir(temp_dir.path()).entryInfoList(QDir::Filter::Dirs | QDir::Filter::NoDotAndDotDot);
+		auto new_app = std::find_if(temp_dir_contents.begin(), temp_dir_contents.end(), [](const QFileInfo& file){ return file.suffix() == QStringLiteral("app"); });
+		if (new_app == temp_dir_contents.end())
+		{
+			reportError("Couldn't find application in update package");
+			return false;
+		}
+		QString new_name = UpdateVersionNumberInName(info.completeBaseName(), m_latest_version);
+		std::optional<std::string> trashed_path = CocoaTools::MoveToTrash(*path);
+		if (!trashed_path.has_value())
+		{
+			reportError("Failed to trash old application");
+			return false;
+		}
+		open_path = info.path() + QStringLiteral("/") + new_name + QStringLiteral(".app");
+		if (!QFile::rename(new_app->absoluteFilePath(), open_path))
+		{
+			QFile::rename(QString::fromStdString(*trashed_path), info.filePath());
+			reportError("Failed to move new application into place (couldn't rename '%s' to '%s')",
+			            new_app->absoluteFilePath().toUtf8().constData(), open_path.toUtf8().constData());
+			return false;
+		}
+		QDir(QString::fromStdString(*trashed_path)).removeRecursively();
+	}
+	if (!CocoaTools::LaunchApplication(open_path.toStdString()))
+	{
+		reportError("Failed to start new application");
+		return false;
+	}
+	return true;
+}
+
 #else
 
-bool AutoUpdaterDialog::processUpdate(const QByteArray& update_data)
+bool AutoUpdaterDialog::processUpdate(const QByteArray& update_data, QProgressDialog& progress)
 {
 	return false;
 }

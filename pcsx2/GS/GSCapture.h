@@ -14,44 +14,35 @@
  */
 
 #pragma once
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "GSVector.h"
-#include "GSPng.h"
 
-#ifdef _WIN32
-#include "Window/GSCaptureDlg.h"
-#include <wil/com.h>
-#endif
-
-class GSCapture
+namespace Threading
 {
-	std::recursive_mutex m_lock;
-	bool m_capturing;
-	GSVector2i m_size;
-	u64 m_frame;
-	std::string m_out_dir;
-	int m_threads;
+class ThreadHandle;
+}
 
-#ifdef _WIN32
+class GSTexture;
+class GSDownloadTexture;
 
-	wil::com_ptr_failfast<IGraphBuilder> m_graph;
-	wil::com_ptr_failfast<IBaseFilter> m_src;
+namespace GSCapture
+{
+	bool BeginCapture(float fps, GSVector2i recommendedResolution, float aspect, std::string filename);
+	bool DeliverVideoFrame(GSTexture* stex);
+	void DeliverAudioPacket(const s16* frames); // SndOutPacketSize
+	void EndCapture();
 
-#elif defined(__unix__)
+	bool IsCapturing();
+	bool IsCapturingVideo();
+	bool IsCapturingAudio();
+	const Threading::ThreadHandle& GetEncoderThreadHandle();
+	GSVector2i GetSize();
 
-	std::vector<std::unique_ptr<GSPng::Worker>> m_workers;
-	int m_compression_level;
-
-#endif
-
-public:
-	GSCapture();
-	virtual ~GSCapture();
-
-	bool BeginCapture(float fps, GSVector2i recommendedResolution, float aspect, std::string& filename);
-	bool DeliverFrame(const void* bits, int pitch, bool rgba);
-	bool EndCapture();
-
-	bool IsCapturing() { return m_capturing; }
-	GSVector2i GetSize() { return m_size; }
-};
+	using CodecName = std::pair<std::string, std::string>; // shortname,longname
+	using CodecList = std::vector<CodecName>;
+	CodecList GetVideoCodecList(const char* container);
+	CodecList GetAudioCodecList(const char* container);
+}; // namespace GSCapture

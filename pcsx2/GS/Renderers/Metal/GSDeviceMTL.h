@@ -25,6 +25,7 @@
 
 #include "common/HashCombine.h"
 #include "common/MRCHelpers.h"
+#include "common/ReadbackSpinManager.h"
 #include "GS/GS.h"
 #include "GSMTLDeviceInfo.h"
 #include "GSMTLSharedHeader.h"
@@ -201,6 +202,7 @@ public:
 				bool iip        : 1;
 				bool fst        : 1;
 				bool point_size : 1;
+				GSMTLExpandType expand : 2;
 			};
 			u8 key;
 		};
@@ -209,9 +211,6 @@ public:
 	};
 
 	using PSSelector = GSHWDrawConfig::PSSelector;
-
-	// MARK: Configuration
-	int m_mipmap;
 
 	// MARK: Permanent resources
 	std::shared_ptr<std::pair<std::mutex, GSDeviceMTL*>> m_backref;
@@ -226,14 +225,24 @@ public:
 	u64 m_current_draw = 1;
 	std::atomic<u64> m_last_finished_draw{0};
 
+	// Spinning
+	ReadbackSpinManager m_spin_manager;
+	u32 m_encoders_in_current_cmdbuf;
+	u32 m_spin_timer = 0;
+	MRCOwned<id<MTLComputePipelineState>> m_spin_pipeline;
+	MRCOwned<id<MTLBuffer>> m_spin_buffer;
+	MRCOwned<id<MTLFence>> m_spin_fence;
+
 	// Functions and Pipeline States
+	MRCOwned<id<MTLComputePipelineState>> m_cas_pipeline[2];
 	MRCOwned<id<MTLRenderPipelineState>> m_convert_pipeline[static_cast<int>(ShaderConvert::Count)];
 	MRCOwned<id<MTLRenderPipelineState>> m_present_pipeline[static_cast<int>(PresentShader::Count)];
 	MRCOwned<id<MTLRenderPipelineState>> m_convert_pipeline_copy[2];
 	MRCOwned<id<MTLRenderPipelineState>> m_convert_pipeline_copy_mask[1 << 4];
 	MRCOwned<id<MTLRenderPipelineState>> m_merge_pipeline[4];
-	MRCOwned<id<MTLRenderPipelineState>> m_interlace_pipeline[4];
+	MRCOwned<id<MTLRenderPipelineState>> m_interlace_pipeline[NUM_INTERLACE_SHADERS];
 	MRCOwned<id<MTLRenderPipelineState>> m_datm_pipeline[2];
+	MRCOwned<id<MTLRenderPipelineState>> m_clut_pipeline[2];
 	MRCOwned<id<MTLRenderPipelineState>> m_stencil_clear_pipeline;
 	MRCOwned<id<MTLRenderPipelineState>> m_primid_init_pipeline[2][2];
 	MRCOwned<id<MTLRenderPipelineState>> m_hdr_init_pipeline;
@@ -243,7 +252,7 @@ public:
 	MRCOwned<id<MTLRenderPipelineState>> m_imgui_pipeline;
 	MRCOwned<id<MTLRenderPipelineState>> m_imgui_pipeline_a8;
 
-	MRCOwned<id<MTLFunction>> m_hw_vs[1 << 3];
+	MRCOwned<id<MTLFunction>> m_hw_vs[1 << 5];
 	std::unordered_map<PSSelector, MRCOwned<id<MTLFunction>>> m_hw_ps;
 	std::unordered_map<PipelineSelectorMTL, MRCOwned<id<MTLRenderPipelineState>>> m_hw_pipeline;
 
@@ -278,7 +287,7 @@ public:
 			bool blend_color  : 1;
 			bool pipeline_sel : 1;
 			bool sampler      : 1;
-		} has;
+		} has = {};
 		DepthStencilSelector depth_sel = DepthStencilSelector::NoDepth();
 		// Clear line (Things below here are tracked by `has` and don't need to be cleared to reset)
 		SamplerSelector sampler_sel;
@@ -323,31 +332,43 @@ public:
 	id<MTLBlitCommandEncoder> GetVertexUploadEncoder();
 	/// Get the render command buffer, creating a new one if it doesn't exist
 	id<MTLCommandBuffer> GetRenderCmdBuf();
+	/// Get the render command buffer, will not create a new one if it doesn't exist.
+	id<MTLCommandBuffer> GetRenderCmdBufWithoutCreate();
+	/// Get the spin fence if spinning is enabled.
+	id<MTLFence> GetSpinFence();
+	/// Called by command buffers when they finish
+	void DrawCommandBufferFinished(u64 draw, id<MTLCommandBuffer> buffer);
 	/// Flush pending operations from all encoders to the GPU
 	void FlushEncoders();
+	/// Flush pending operations and spins the GPU for a download.
+	void FlushEncodersForReadback();
 	/// End current render pass without flushing
 	void EndRenderPass();
 	/// Begin a new render pass (may reuse existing)
 	void BeginRenderPass(NSString* name, GSTexture* color, MTLLoadAction color_load, GSTexture* depth, MTLLoadAction depth_load, GSTexture* stencil = nullptr, MTLLoadAction stencil_load = MTLLoadActionDontCare);
+	/// Call at the end of each frame
+	void FrameCompleted();
 
 	GSTexture* CreateSurface(GSTexture::Type type, int width, int height, int levels, GSTexture::Format format) override;
 
-	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, const GSVector4& c) override;
-	void DoInterlace(GSTexture* sTex, GSTexture* dTex, int shader, bool linear, float yoffset) override;
+	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, const GSVector4& c, const bool linear) override;
+	void DoInterlace(GSTexture* sTex, GSTexture* dTex, int shader, bool linear, float yoffset, int bufIdx) override;
 	void DoFXAA(GSTexture* sTex, GSTexture* dTex) override;
 	void DoShadeBoost(GSTexture* sTex, GSTexture* dTex, const float params[4]) override;
-	void DoExternalFX(GSTexture* sTex, GSTexture* dTex) override;
+
+	bool DoCAS(GSTexture* sTex, GSTexture* dTex, bool sharpen_only, const std::array<u32, NUM_CAS_CONSTANTS>& constants) override;
 
 	MRCOwned<id<MTLFunction>> LoadShader(NSString* name);
 	MRCOwned<id<MTLRenderPipelineState>> MakePipeline(MTLRenderPipelineDescriptor* desc, id<MTLFunction> vertex, id<MTLFunction> fragment, NSString* name);
-	bool Create(HostDisplay* display) override;
+	MRCOwned<id<MTLComputePipelineState>> MakeComputePipeline(id<MTLFunction> compute, NSString* name);
+	bool Create() override;
 
 	void ClearRenderTarget(GSTexture* t, const GSVector4& c) override;
 	void ClearRenderTarget(GSTexture* t, u32 c) override;
 	void ClearDepth(GSTexture* t) override;
 	void ClearStencil(GSTexture* t, u8 c) override;
 
-	bool DownloadTexture(GSTexture* src, const GSVector4i& rect, GSTexture::GSMap& out_map) override;
+	std::unique_ptr<GSDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format) override;
 
 	void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
 	void DoStretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, id<MTLRenderPipelineState> pipeline, bool linear, LoadAction load_action, void* frag_uniform, size_t frag_uniform_len);
@@ -357,6 +378,8 @@ public:
 	void StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, ShaderConvert shader = ShaderConvert::COPY, bool linear = true) override;
 	void StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, bool red, bool green, bool blue, bool alpha) override;
 	void PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, PresentShader shader, float shaderTime, bool linear) override;
+	void UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize) override;
+	void ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM) override;
 
 	void FlushClears(GSTexture* tex);
 
@@ -395,5 +418,20 @@ public:
 	void RenderImGui(ImDrawData* data);
 	u32 FrameNo() const { return m_frame; }
 };
+
+static constexpr bool IsCommandBufferCompleted(MTLCommandBufferStatus status)
+{
+	switch (status)
+	{
+		case MTLCommandBufferStatusNotEnqueued:
+		case MTLCommandBufferStatusEnqueued:
+		case MTLCommandBufferStatusCommitted:
+		case MTLCommandBufferStatusScheduled:
+			return false;
+		case MTLCommandBufferStatusCompleted:
+		case MTLCommandBufferStatusError:
+			return true;
+	}
+}
 
 #endif // __APPLE__

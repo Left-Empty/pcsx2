@@ -24,13 +24,13 @@
 #include "common/StringUtil.h"
 
 #include "pcsx2/HostSettings.h"
+#include "pcsx2/INISettingsInterface.h"
 
 #include "DEV9SettingsWidget.h"
-#include "EmuThread.h"
+#include "QtHost.h"
 #include "QtUtils.h"
 #include "SettingWidgetBinder.h"
 #include "SettingsDialog.h"
-#include "Frontend/INISettingsInterface.h"
 
 #include "HddCreateQt.h"
 
@@ -251,8 +251,7 @@ DEV9SettingsWidget::DEV9SettingsWidget(SettingsDialog* dialog, QWidget* parent)
 	connect(m_ui.ethHostExport, &QPushButton::clicked, this, &DEV9SettingsWidget::onEthHostExport);
 	connect(m_ui.ethHostImport, &QPushButton::clicked, this, &DEV9SettingsWidget::onEthHostImport);
 
-	if (m_dialog->isPerGameSettings())
-		m_ui.ethTabWidget->setTabEnabled(1, false);
+	connect(m_ui.ethHostPerGame, &QPushButton::clicked, this, &DEV9SettingsWidget::onEthHostPerGame);
 
 	//////////////////////////////////////////////////////////////////////////
 	// HDD Settings
@@ -261,9 +260,13 @@ DEV9SettingsWidget::DEV9SettingsWidget(SettingsDialog* dialog, QWidget* parent)
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.hddEnabled, "DEV9/Hdd", "HddEnable", false);
 
 	connect(m_ui.hddFile, &QLineEdit::editingFinished, this, &DEV9SettingsWidget::onHddFileEdit);
-	SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.hddFile, "DEV9/Hdd", "HddFile", "DEV9hdd.raw");
 	if (m_dialog->isPerGameSettings())
+	{
+		m_ui.hddFile->setText(QString::fromUtf8(m_dialog->getStringValue("DEV9/Hdd", "HddFile", "").value().c_str()));
 		m_ui.hddFile->setPlaceholderText(QString::fromUtf8(Host::GetBaseStringSettingValue("DEV9/Hdd", "HddFile", "DEV9hdd.raw")));
+	}
+	else
+		m_ui.hddFile->setText(QString::fromUtf8(m_dialog->getStringValue("DEV9/Hdd", "HddFile", "DEV9hdd.raw").value().c_str()));
 	connect(m_ui.hddBrowseFile, &QPushButton::clicked, this, &DEV9SettingsWidget::onHddBrowseFileClicked);
 
 	//TODO: need a getUintValue for if 48bit support occurs
@@ -271,18 +274,27 @@ DEV9SettingsWidget::DEV9SettingsWidget(SettingsDialog* dialog, QWidget* parent)
 
 	if (m_dialog->isPerGameSettings())
 	{
+		std::optional<int> sizeOpt = std::nullopt;
+		if (size > 0)
+			sizeOpt = size;
 		const int sizeGlobal = (u64)Host::GetBaseIntSettingValue("DEV9/Hdd", "HddSizeSectors", 0) * 512 / (1024 * 1024 * 1024);
-		m_ui.hddSizeSpinBox->setMinimum(39);
-		m_ui.hddSizeSpinBox->setSpecialValueText(tr("Global [%1]").arg(sizeGlobal));
+
+		SettingWidgetBinder::SettingAccessor<QSpinBox>::makeNullableInt(m_ui.hddSizeSpinBox, sizeGlobal);
+		SettingWidgetBinder::SettingAccessor<QSpinBox>::setNullableIntValue(m_ui.hddSizeSpinBox, sizeOpt);
+
+		m_ui.hddSizeSlider->setValue(sizeOpt.value_or(sizeGlobal));
+
+		m_ui.hddSizeSlider->setContextMenuPolicy(Qt::CustomContextMenu);
+		connect(m_ui.hddSizeSlider, &QSlider::customContextMenuRequested, this, &DEV9SettingsWidget::onHddSizeSliderContext);
+	}
+	else
+	{
+		m_ui.hddSizeSlider->setValue(size);
+		SettingWidgetBinder::SettingAccessor<QSpinBox>::setIntValue(m_ui.hddSizeSpinBox, size);
 	}
 
-	// clang-format off
-	m_ui.hddSizeSlider ->setValue(size);
-	m_ui.hddSizeSpinBox->setValue(size);
-
-	connect(m_ui.hddSizeSlider,  QOverload<int>::of(&QSlider ::valueChanged), this, &DEV9SettingsWidget::onHddSizeSlide);
-	connect(m_ui.hddSizeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &DEV9SettingsWidget::onHddSizeSpin );
-	// clang-format on
+	connect(m_ui.hddSizeSlider, QOverload<int>::of(&QSlider::valueChanged), this, &DEV9SettingsWidget::onHddSizeSlide);
+	SettingWidgetBinder::SettingAccessor<QSpinBox>::connectValueChanged(m_ui.hddSizeSpinBox, [&]() { onHddSizeAccessorSpin(); });
 
 	connect(m_ui.hddCreate, &QPushButton::clicked, this, &DEV9SettingsWidget::onHddCreateClicked);
 }
@@ -495,7 +507,7 @@ void DEV9SettingsWidget::onEthHostDel()
 
 void DEV9SettingsWidget::onEthHostExport()
 {
-	std::vector<HostEntryUi> hosts = ListHostsConfig();
+	std::vector<HostEntryUi> hosts = ListHostsConfig().value();
 
 	DEV9DnsHostDialog exportDialog(hosts, this);
 
@@ -609,6 +621,55 @@ void DEV9SettingsWidget::onEthHostImport()
 		QMessageBox::StandardButton::Ok, QMessageBox::StandardButton::Ok);
 }
 
+void DEV9SettingsWidget::onEthHostPerGame()
+{
+	const std::optional<int> hostLengthOpt = m_dialog->getIntValue("DEV9/Eth/Hosts", "Count", std::nullopt);
+	if (!hostLengthOpt.has_value())
+	{
+		QMessageBox::StandardButton ret = QMessageBox::question(this, tr("Per Game Host list"),
+			tr("Copy global settings?"),
+			QMessageBox::StandardButton::Yes | QMessageBox::StandardButton::No | QMessageBox::StandardButton::Cancel, QMessageBox::StandardButton::Yes);
+
+		switch (ret)
+		{
+			case QMessageBox::StandardButton::No:
+				m_dialog->setIntSettingValue("DEV9/Eth/Hosts", "Count", 0);
+				break;
+
+			case QMessageBox::StandardButton::Yes:
+			{
+				m_dialog->setIntSettingValue("DEV9/Eth/Hosts", "Count", 0);
+				std::vector<HostEntryUi> hosts = ListBaseHostsConfig();
+				for (size_t i = 0; i < hosts.size(); i++)
+					AddNewHostConfig(hosts[i]);
+				break;
+			}
+
+			case QMessageBox::StandardButton::Cancel:
+				return;
+
+			default:
+				return;
+		}
+	}
+	else
+	{
+		QMessageBox::StandardButton ret = QMessageBox::question(this, tr("Per Game Host list"),
+			tr("Delete per game host list?"),
+			QMessageBox::StandardButton::Yes | QMessageBox::StandardButton::Cancel, QMessageBox::StandardButton::Yes);
+
+		if (ret == QMessageBox::StandardButton::Yes)
+		{
+			const int hostLength = CountHostsConfig();
+			for (int i = hostLength - 1; i >= 0; i--)
+				DeleteHostConfig(i);
+		}
+		m_dialog->setIntSettingValue("DEV9/Eth/Hosts", nullptr, std::nullopt);
+	}
+
+	RefreshHostList();
+}
+
 void DEV9SettingsWidget::onEthHostEdit(QStandardItem* item)
 {
 	const int row = item->row();
@@ -634,7 +695,7 @@ void DEV9SettingsWidget::onEthHostEdit(QStandardItem* item)
 
 void DEV9SettingsWidget::onHddEnabledChanged(int state)
 {
-	const bool enabled = state == Qt::CheckState::PartiallyChecked ? m_dialog->getEffectiveBoolValue("DEV9/Hdd", "HddEnable", false) : state;
+	const bool enabled = state == Qt::CheckState::PartiallyChecked ? Host::GetBaseBoolSettingValue("DEV9/Hdd", "HddEnable", false) : state;
 
 	m_ui.hddFile->setEnabled(enabled);
 	m_ui.hddFileLabel->setEnabled(enabled);
@@ -651,8 +712,8 @@ void DEV9SettingsWidget::onHddBrowseFileClicked()
 {
 	QString path =
 		QDir::toNativeSeparators(QFileDialog::getSaveFileName(QtUtils::GetRootWidget(this), tr("HDD Image File"),
-			!m_ui.hddFile->text().isEmpty() ? m_ui.hddFile->text() : "DEV9hdd.raw", tr("HDD (*.raw)"), nullptr,
-			QFileDialog::DontConfirmOverwrite));
+			!m_ui.hddFile->text().isEmpty() ? m_ui.hddFile->text() : (!m_ui.hddFile->placeholderText().isEmpty() ? m_ui.hddFile->placeholderText() : "DEV9hdd.raw"),
+			tr("HDD (*.raw)"), nullptr, QFileDialog::DontConfirmOverwrite));
 
 	if (path.isEmpty())
 		return;
@@ -663,10 +724,16 @@ void DEV9SettingsWidget::onHddBrowseFileClicked()
 
 void DEV9SettingsWidget::onHddFileEdit()
 {
-	//Check if file exists, if so set HddSize to correct value
+	// Check if file exists, if so set HddSize to correct value.
+	// Also save the hddPath setting
 	std::string hddPath(m_ui.hddFile->text().toStdString());
 	if (hddPath.empty())
+	{
+		m_dialog->setStringSettingValue("DEV9/Hdd", "HddFile", std::nullopt);
 		return;
+	}
+	else
+		m_dialog->setStringSettingValue("DEV9/Hdd", "HddFile", hddPath.c_str());
 
 	if (!Path::IsAbsolute(hddPath))
 		hddPath = Path::Combine(EmuFolders::Settings, hddPath);
@@ -691,22 +758,49 @@ void DEV9SettingsWidget::onHddFileEdit()
 
 void DEV9SettingsWidget::onHddSizeSlide(int i)
 {
+	// We have to call onHddSizeAccessorSpin() ourself, as the value could still be considered null when the valueChanged signal is fired
 	QSignalBlocker sb(m_ui.hddSizeSpinBox);
-	m_ui.hddSizeSpinBox->setValue(i);
-
-	m_dialog->setIntSettingValue("DEV9/Hdd", "HddSizeSectors", (int)((s64)i * 1024 * 1024 * 1024 / 512));
+	SettingWidgetBinder::SettingAccessor<QSpinBox>::setNullableIntValue(m_ui.hddSizeSpinBox, i);
+	onHddSizeAccessorSpin();
 }
 
-void DEV9SettingsWidget::onHddSizeSpin(int i)
+void DEV9SettingsWidget::onHddSizeSliderContext(const QPoint& pt)
 {
-	QSignalBlocker sb(m_ui.hddSizeSlider);
-	m_ui.hddSizeSlider->setValue(i);
+	QMenu menu(m_ui.hddSizeSlider);
+	connect(menu.addAction(qApp->translate("SettingWidgetBinder", "Reset")), &QAction::triggered, this, &DEV9SettingsWidget::onHddSizeSliderReset);
+	menu.exec(m_ui.hddSizeSlider->mapToGlobal(pt));
+}
 
-	//TODO: need a setUintSettingValue for if 48bit support occurs
-	if (i == 39)
-		m_dialog->setIntSettingValue("DEV9/Hdd", "HddSizeSectors", std::nullopt);
+void DEV9SettingsWidget::onHddSizeSliderReset([[maybe_unused]] bool checked)
+{
+	// We have to call onHddSizeAccessorSpin() ourself, as the value could still be considered non-null when the valueChanged signal is fired
+	QSignalBlocker sb(m_ui.hddSizeSpinBox);
+	SettingWidgetBinder::SettingAccessor<QSpinBox>::setNullableIntValue(m_ui.hddSizeSpinBox, std::nullopt);
+	onHddSizeAccessorSpin();
+}
+
+void DEV9SettingsWidget::onHddSizeAccessorSpin()
+{
+	//TODO: need a getUintValue for if 48bit support occurs
+	QSignalBlocker sb(m_ui.hddSizeSlider);
+	if (m_dialog->isPerGameSettings())
+	{
+		std::optional<int> new_value = SettingWidgetBinder::SettingAccessor<QSpinBox>::getNullableIntValue(m_ui.hddSizeSpinBox);
+
+		const int sizeGlobal = (u64)Host::GetBaseIntSettingValue("DEV9/Hdd", "HddSizeSectors", 0) * 512 / (1024 * 1024 * 1024);
+		m_ui.hddSizeSlider->setValue(new_value.value_or(sizeGlobal));
+
+		if (new_value.has_value())
+			m_dialog->setIntSettingValue("DEV9/Hdd", "HddSizeSectors", new_value.value() * (1024 * 1024 * 1024 / 512));
+		else
+			m_dialog->setIntSettingValue("DEV9/Hdd", "HddSizeSectors", std::nullopt);
+	}
 	else
-		m_dialog->setIntSettingValue("DEV9/Hdd", "HddSizeSectors", i * (1024 * 1024 * 1024 / 512));
+	{
+		const int new_value = SettingWidgetBinder::SettingAccessor<QSpinBox>::getIntValue(m_ui.hddSizeSpinBox);
+		m_ui.hddSizeSlider->setValue(new_value);
+		m_dialog->setIntSettingValue("DEV9/Hdd", "HddSizeSectors", new_value * (1024 * 1024 * 1024 / 512));
+	}
 }
 
 void DEV9SettingsWidget::onHddCreateClicked()
@@ -726,7 +820,7 @@ void DEV9SettingsWidget::onHddCreateClicked()
 	if (!Path::IsAbsolute(hddPath))
 		hddPath = Path::Combine(EmuFolders::Settings, hddPath);
 
-	if (!FileSystem::FileExists(hddPath.c_str()))
+	if (FileSystem::FileExists(hddPath.c_str()))
 	{
 		//GHC uses UTF8 on all platforms
 		QMessageBox::StandardButton selection =
@@ -825,9 +919,42 @@ void DEV9SettingsWidget::RefreshHostList()
 	while (m_ethHost_model->rowCount() > 0)
 		m_ethHost_model->removeRow(0);
 
-	//Load list
-	std::vector<HostEntryUi> hosts = ListHostsConfig();
+	bool enableHostsUi;
 
+	std::vector<HostEntryUi> hosts;
+
+	if (m_dialog->isPerGameSettings())
+	{
+		m_ui.ethHostPerGame->setVisible(true);
+
+		std::optional<std::vector<HostEntryUi>> hostsOpt = ListHostsConfig();
+		if (hostsOpt.has_value())
+		{
+			m_ui.ethHostPerGame->setText(tr("Use Global"));
+			hosts = hostsOpt.value();
+			enableHostsUi = true;
+		}
+		else
+		{
+			m_ui.ethHostPerGame->setText(tr("Override"));
+			hosts = ListBaseHostsConfig();
+			enableHostsUi = false;
+		}
+	}
+	else
+	{
+		m_ui.ethHostPerGame->setVisible(false);
+		hosts = ListHostsConfig().value();
+		enableHostsUi = true;
+	}
+
+	m_ui.ethHosts->setEnabled(enableHostsUi);
+	m_ui.ethHostAdd->setEnabled(enableHostsUi);
+	m_ui.ethHostDel->setEnabled(enableHostsUi);
+	m_ui.ethHostExport->setEnabled(enableHostsUi);
+	m_ui.ethHostImport->setEnabled(enableHostsUi);
+
+	//Load list
 	for (size_t i = 0; i < hosts.size(); i++)
 	{
 		HostEntryUi entry = hosts[i];
@@ -863,11 +990,21 @@ int DEV9SettingsWidget::CountHostsConfig()
 	return m_dialog->getIntValue("DEV9/Eth/Hosts", "Count", 0).value();
 }
 
-std::vector<HostEntryUi> DEV9SettingsWidget::ListHostsConfig()
+std::optional<std::vector<HostEntryUi>> DEV9SettingsWidget::ListHostsConfig()
 {
 	std::vector<HostEntryUi> hosts;
 
-	const int hostLength = CountHostsConfig();
+	std::optional<int> hostLengthOpt;
+	if (m_dialog->isPerGameSettings())
+	{
+		hostLengthOpt = m_dialog->getIntValue("DEV9/Eth/Hosts", "Count", std::nullopt);
+		if (!hostLengthOpt.has_value())
+			return std::nullopt;
+	}
+	else
+		hostLengthOpt = m_dialog->getIntValue("DEV9/Eth/Hosts", "Count", 0);
+
+	const int hostLength = hostLengthOpt.value();
 	for (int i = 0; i < hostLength; i++)
 	{
 		std::string section = "DEV9/Eth/Hosts/Host" + std::to_string(i);
@@ -877,6 +1014,26 @@ std::vector<HostEntryUi> DEV9SettingsWidget::ListHostsConfig()
 		entry.Desc = m_dialog->getStringValue(section.c_str(), "Desc", "").value();
 		entry.Address = m_dialog->getStringValue(section.c_str(), "Address", "").value();
 		entry.Enabled = m_dialog->getBoolValue(section.c_str(), "Enabled", false).value();
+		hosts.push_back(entry);
+	}
+
+	return hosts;
+}
+
+std::vector<HostEntryUi> DEV9SettingsWidget::ListBaseHostsConfig()
+{
+	std::vector<HostEntryUi> hosts;
+
+	const int hostLength = Host::GetBaseIntSettingValue("DEV9/Eth/Hosts", "Count", 0);
+	for (int i = 0; i < hostLength; i++)
+	{
+		std::string section = "DEV9/Eth/Hosts/Host" + std::to_string(i);
+
+		HostEntryUi entry;
+		entry.Url = Host::GetBaseStringSettingValue(section.c_str(), "Url", "");
+		entry.Desc = Host::GetBaseStringSettingValue(section.c_str(), "Desc", "");
+		entry.Address = Host::GetBaseStringSettingValue(section.c_str(), "Address", "");
+		entry.Enabled = Host::GetBaseBoolSettingValue(section.c_str(), "Enabled", false);
 		hosts.push_back(entry);
 	}
 

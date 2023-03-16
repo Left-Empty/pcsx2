@@ -24,6 +24,7 @@
 #include <condition_variable>
 
 #ifdef _WIN32
+#include "common/RedtapeWindows.h"
 #include <winsock2.h>
 #include <iphlpapi.h>
 #elif defined(__POSIX__)
@@ -33,6 +34,7 @@
 
 #include "Config.h"
 
+#include "PacketReader/MAC_Address.h"
 #include "PacketReader/IP/IP_Address.h"
 #include "InternalServers/DHCP_Server.h"
 #include "InternalServers/DNS_Logger.h"
@@ -41,7 +43,7 @@
 struct ConfigDEV9;
 
 // first three recognized by Xlink as Sony PS2
-const u8 defaultMAC[6] = {0x00, 0x04, 0x1F, 0x82, 0x30, 0x31};
+const PacketReader::MAC_Address defaultMAC = {{{0x00, 0x04, 0x1F, 0x82, 0x30, 0x31}}};
 
 struct NetPacket
 {
@@ -92,13 +94,13 @@ public:
 	static const PacketReader::IP::IP_Address internalIP;
 
 protected:
-	u8 ps2MAC[6];
-	static const u8 broadcastMAC[6];
-	static const u8 internalMAC[6];
+	PacketReader::MAC_Address ps2MAC;
+	static const PacketReader::MAC_Address broadcastMAC;
+	static const PacketReader::MAC_Address internalMAC;
 
 private:
 	//Only set if packet sent to the internal IP address
-	PacketReader::IP::IP_Address ps2IP{0};
+	PacketReader::IP::IP_Address ps2IP{};
 	std::thread internalRxThread;
 	std::atomic<bool> internalRxThreadRunning{false};
 
@@ -125,18 +127,18 @@ public:
 	virtual ~NetAdapter();
 
 protected:
-	void SetMACAddress(u8* mac);
+	void SetMACAddress(PacketReader::MAC_Address* mac);
 	bool VerifyPkt(NetPacket* pkt, int read_size);
 
 	void InspectRecv(NetPacket* pkt);
 	void InspectSend(NetPacket* pkt);
 
 #ifdef _WIN32
-	void InitInternalServer(PIP_ADAPTER_ADDRESSES adapter, bool dhcpForceEnable = false, PacketReader::IP::IP_Address ipOverride = {0}, PacketReader::IP::IP_Address subnetOverride = {0}, PacketReader::IP::IP_Address gatewayOveride = {0});
-	void ReloadInternalServer(PIP_ADAPTER_ADDRESSES adapter, bool dhcpForceEnable = false, PacketReader::IP::IP_Address ipOverride = {0}, PacketReader::IP::IP_Address subnetOverride = {0}, PacketReader::IP::IP_Address gatewayOveride = {0});
+	void InitInternalServer(PIP_ADAPTER_ADDRESSES adapter, bool dhcpForceEnable = false, PacketReader::IP::IP_Address ipOverride = {}, PacketReader::IP::IP_Address subnetOverride = {}, PacketReader::IP::IP_Address gatewayOveride = {});
+	void ReloadInternalServer(PIP_ADAPTER_ADDRESSES adapter, bool dhcpForceEnable = false, PacketReader::IP::IP_Address ipOverride = {}, PacketReader::IP::IP_Address subnetOverride = {}, PacketReader::IP::IP_Address gatewayOveride = {});
 #elif defined(__POSIX__)
-	void InitInternalServer(ifaddrs* adapter, bool dhcpForceEnable = false, PacketReader::IP::IP_Address ipOverride = {0}, PacketReader::IP::IP_Address subnetOverride = {0}, PacketReader::IP::IP_Address gatewayOveride = {0});
-	void ReloadInternalServer(ifaddrs* adapter, bool dhcpForceEnable = false, PacketReader::IP::IP_Address ipOverride = {0}, PacketReader::IP::IP_Address subnetOverride = {0}, PacketReader::IP::IP_Address gatewayOveride = {0});
+	void InitInternalServer(ifaddrs* adapter, bool dhcpForceEnable = false, PacketReader::IP::IP_Address ipOverride = {}, PacketReader::IP::IP_Address subnetOverride = {}, PacketReader::IP::IP_Address gatewayOveride = {});
+	void ReloadInternalServer(ifaddrs* adapter, bool dhcpForceEnable = false, PacketReader::IP::IP_Address ipOverride = {}, PacketReader::IP::IP_Address subnetOverride = {}, PacketReader::IP::IP_Address gatewayOveride = {});
 #endif
 
 private:

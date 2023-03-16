@@ -20,56 +20,11 @@
 #include "common/Assertions.h"
 #include "common/Pcsx2Defs.h"
 
-// Because wxTrap isn't available on Linux builds of wxWidgets (non-Debug, typically)
-void pxTrap();
-
-// --------------------------------------------------------------------------------------
-//  DESTRUCTOR_CATCHALL - safe destructor helper
-// --------------------------------------------------------------------------------------
-// In C++ destructors *really* need to be "nothrow" garaunteed, otherwise you can have
-// disasterous nested exception throws during the unwinding process of an originating
-// exception.  Use this macro to dispose of these dangerous exceptions, and generate a
-// friendly error log in their wake.
-//
-// Note: Console can also fire an Exception::OutOfMemory
-#define __DESTRUCTOR_CATCHALL(funcname) \
-	catch (BaseException & ex) \
-	{ \
-		try \
-		{ \
-			Console.Error("Unhandled BaseException in %s (ignored!):", funcname); \
-			Console.Error(ex.FormatDiagnosticMessage()); \
-		} \
-		catch (...) \
-		{ \
-			fprintf(stderr, "ERROR: (out of memory?)\n"); \
-		} \
-	} \
-	catch (std::exception & ex) \
-	{ \
-		try \
-		{ \
-			Console.Error("Unhandled std::exception in %s (ignored!):", funcname); \
-			Console.Error(ex.what()); \
-		} \
-		catch (...) \
-		{ \
-			fprintf(stderr, "ERROR: (out of memory?)\n"); \
-		} \
-	} \
-	catch (...) \
-	{ \
-		/* Unreachable code */ \
-	}
-
-#define DESTRUCTOR_CATCHALL __DESTRUCTOR_CATCHALL(__pxFUNCTION__)
-
 namespace Exception
 {
 	class BaseException;
 
-	int MakeNewType();
-	BaseException* FromErrno(std::string streamname, int errcode);
+	std::unique_ptr<BaseException> FromErrno(std::string streamname, int errcode);
 
 	// --------------------------------------------------------------------------------------
 	//  BaseException
@@ -117,35 +72,6 @@ namespace Exception
 
 		virtual void Rethrow() const = 0;
 		virtual BaseException* Clone() const = 0;
-	};
-
-	typedef std::unique_ptr<BaseException> ScopedExcept;
-
-	// --------------------------------------------------------------------------------------
-	//  Ps2Generic Exception
-	// --------------------------------------------------------------------------------------
-	// This class is used as a base exception for things tossed by PS2 cpus (EE, IOP, etc).
-	//
-	// Implementation note: does not derive from BaseException, so that we can use different
-	// catch block hierarchies to handle them (if needed).
-	//
-	// Translation Note: Currently these exceptions are never translated.  English/diagnostic
-	// format only. :)
-	//
-	class Ps2Generic
-	{
-	protected:
-		std::string m_message; // a "detailed" message of what disastrous thing has occurred!
-
-	public:
-		virtual ~Ps2Generic() = default;
-
-		virtual u32 GetPc() const = 0;
-		virtual bool IsDelaySlot() const = 0;
-		virtual std::string& Message() { return m_message; }
-
-		virtual void Rethrow() const = 0;
-		virtual Ps2Generic* Clone() const = 0;
 	};
 
 // Some helper macros for defining the standard constructors of internationalized constructors
@@ -223,83 +149,6 @@ public: \
 		RuntimeError() { IsSilent = false; }
 		RuntimeError(const std::runtime_error& ex, const char* prefix = nullptr);
 		RuntimeError(const std::exception& ex, const char* prefix = nullptr);
-	};
-
-	// --------------------------------------------------------------------------------------
-	//  CancelAppEvent  -  Exception for canceling an event in a non-verbose fashion
-	// --------------------------------------------------------------------------------------
-	// Typically the PCSX2 interface issues popup dialogs for runtime errors.  This exception
-	// instead issues a "silent" cancelation that is handled by the app gracefully (generates
-	// log, and resumes messages queue processing).
-	//
-	// I chose to have this exception derive from RuntimeError, since if one is thrown from outside
-	// an App message loop we'll still want it to be handled in a reasonably graceful manner.
-	class CancelEvent : public RuntimeError
-	{
-		DEFINE_RUNTIME_EXCEPTION(CancelEvent, RuntimeError, "No reason given.")
-
-	public:
-		explicit CancelEvent(std::string logmsg)
-		{
-			m_message_diag = std::move(logmsg);
-			// overridden message formatters only use the diagnostic version...
-		}
-
-		virtual std::string FormatDisplayMessage() const override;
-		virtual std::string FormatDiagnosticMessage() const override;
-	};
-
-	// ---------------------------------------------------------------------------------------
-	//  OutOfMemory
-	// ---------------------------------------------------------------------------------------
-	// This exception has a custom-formatted Diagnostic string.  The parameter give when constructing
-	// the exception is a block/alloc name, which is used as a formatting parameter in the diagnostic
-	// output.  The default diagnostic message is "Out of memory exception, while allocating the %s."
-	// where %s is filled in with the block name.
-	//
-	// The user string is not custom-formatted, and should contain *NO* %s tags.
-	//
-	class OutOfMemory : public RuntimeError
-	{
-		DEFINE_RUNTIME_EXCEPTION(OutOfMemory, RuntimeError, "")
-
-	public:
-		std::string AllocDescription;
-
-	public:
-		OutOfMemory(std::string allocdesc);
-
-		virtual std::string FormatDisplayMessage() const override;
-		virtual std::string FormatDiagnosticMessage() const override;
-	};
-
-	class ParseError : public RuntimeError
-	{
-		DEFINE_RUNTIME_EXCEPTION(ParseError, RuntimeError, "Parse error");
-	};
-
-	// ---------------------------------------------------------------------------------------
-	// Hardware/OS Exceptions:
-	//   HardwareDeficiency / VirtualMemoryMapConflict
-	// ---------------------------------------------------------------------------------------
-
-	// This exception is a specific type of OutOfMemory error that isn't "really" an out of
-	// memory error.  More likely it's caused by a plugin or driver reserving a range of memory
-	// we'd really like to have access to.
-	class VirtualMemoryMapConflict : public OutOfMemory
-	{
-		DEFINE_RUNTIME_EXCEPTION(VirtualMemoryMapConflict, OutOfMemory, "")
-
-		VirtualMemoryMapConflict(std::string allocdesc);
-
-		virtual std::string FormatDisplayMessage() const override;
-		virtual std::string FormatDiagnosticMessage() const override;
-	};
-
-	class HardwareDeficiency : public RuntimeError
-	{
-	public:
-		DEFINE_RUNTIME_EXCEPTION(HardwareDeficiency, RuntimeError, "Your machine's hardware is incapable of running PCSX2.  Sorry dood.");
 	};
 
 	// ---------------------------------------------------------------------------------------
@@ -401,28 +250,6 @@ public: \
 		virtual std::string FormatDiagnosticMessage() const override;
 		virtual std::string FormatDisplayMessage() const override;
 	};
-
-#ifdef _WIN32
-	// --------------------------------------------------------------------------------------
-	//  Exception::WinApiError
-	// --------------------------------------------------------------------------------------
-	class WinApiError : public RuntimeError
-	{
-		DEFINE_EXCEPTION_COPYTORS(WinApiError, RuntimeError)
-		DEFINE_EXCEPTION_MESSAGES(WinApiError)
-
-	public:
-		int ErrorId;
-
-	public:
-		WinApiError();
-
-		std::string GetMsgFromWindows() const;
-		virtual std::string FormatDisplayMessage() const override;
-		virtual std::string FormatDiagnosticMessage() const override;
-	};
-#endif
 } // namespace Exception
 
 using Exception::BaseException;
-using Exception::ScopedExcept;

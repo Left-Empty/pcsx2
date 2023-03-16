@@ -14,6 +14,7 @@
  */
 
 #pragma once
+#include "DebugTools/BiosDebugData.h"
 #include "MemoryTypes.h"
 #include "ExpressionParser.h"
 #include "SymbolMap.h"
@@ -53,9 +54,13 @@ public:
 	};
 
 	virtual u32 read8(u32 address) = 0;
+	virtual u32 read8(u32 address, bool& valid) = 0;
 	virtual u32 read16(u32 address) = 0;
+	virtual u32 read16(u32 address, bool& valid) = 0;
 	virtual u32 read32(u32 address) = 0;
+	virtual u32 read32(u32 address, bool& valid) = 0;
 	virtual u64 read64(u32 address) = 0;
+	virtual u64 read64(u32 address, bool& valid) = 0;
 	virtual u128 read128(u32 address) = 0;
 	virtual void write8(u32 address, u8 value) = 0;
 	virtual void write32(u32 address, u32 value) = 0;
@@ -80,6 +85,7 @@ public:
 	virtual u32 getCycles() = 0;
 	virtual BreakPointCpu getCpuType() = 0;
 	[[nodiscard]] virtual SymbolMap& GetSymbolMap() const = 0;
+	[[nodiscard]] virtual std::vector<std::unique_ptr<BiosThread>> GetThreadList() const = 0;
 
 	bool initExpression(const char* exp, PostfixExpression& dest);
 	bool parseExpression(PostfixExpression& exp, u64& dest);
@@ -88,15 +94,25 @@ public:
 	void pauseCpu();
 	void resumeCpu();
 	char* stringFromPointer(u32 p);
+
+	static void setPauseOnEntry(bool pauseOnEntry) { m_pause_on_entry = pauseOnEntry; };
+	static bool getPauseOnEntry() { return m_pause_on_entry; }
+
+private:
+	static bool m_pause_on_entry;
 };
 
 class R5900DebugInterface : public DebugInterface
 {
 public:
 	u32 read8(u32 address) override;
+	u32 read8(u32 address, bool& valid) override;
 	u32 read16(u32 address) override;
+	u32 read16(u32 address, bool& valid) override;
 	u32 read32(u32 address) override;
+	u32 read32(u32 address, bool& valid) override;
 	u64 read64(u32 address) override;
+	u64 read64(u32 address, bool& valid) override;
 	u128 read128(u32 address) override;
 	void write8(u32 address, u8 value) override;
 	void write32(u32 address, u32 value) override;
@@ -116,6 +132,7 @@ public:
 	void setPc(u32 newPc) override;
 	void setRegister(int cat, int num, u128 newValue) override;
 	[[nodiscard]] SymbolMap& GetSymbolMap() const override;
+	[[nodiscard]] std::vector<std::unique_ptr<BiosThread>> GetThreadList() const override;
 
 	std::string disasm(u32 address, bool simplify) override;
 	bool isValidAddress(u32 address) override;
@@ -128,9 +145,13 @@ class R3000DebugInterface : public DebugInterface
 {
 public:
 	u32 read8(u32 address) override;
+	u32 read8(u32 address, bool& valid) override;
 	u32 read16(u32 address) override;
+	u32 read16(u32 address, bool& valid) override;
 	u32 read32(u32 address) override;
+	u32 read32(u32 address, bool& valid) override;
 	u64 read64(u32 address) override;
+	u64 read64(u32 address, bool& valid) override;
 	u128 read128(u32 address) override;
 	void write8(u32 address, u8 value) override;
 	void write32(u32 address, u32 value) override;
@@ -150,6 +171,7 @@ public:
 	void setPc(u32 newPc) override;
 	void setRegister(int cat, int num, u128 newValue) override;
 	[[nodiscard]] SymbolMap& GetSymbolMap() const override;
+	[[nodiscard]] std::vector<std::unique_ptr<BiosThread>> GetThreadList() const override;
 
 	std::string disasm(u32 address, bool simplify) override;
 	bool isValidAddress(u32 address) override;

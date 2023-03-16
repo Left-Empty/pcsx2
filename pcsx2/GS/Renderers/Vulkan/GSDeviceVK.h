@@ -72,9 +72,9 @@ public:
 	{
 		NUM_TFX_DESCRIPTOR_SETS = 3,
 		NUM_TFX_DYNAMIC_OFFSETS = 2,
-		NUM_TFX_SAMPLERS = 2,
+		NUM_TFX_DRAW_TEXTURES = 2,
 		NUM_TFX_RT_TEXTURES = 2,
-		NUM_TFX_TEXTURES = NUM_TFX_SAMPLERS + NUM_TFX_RT_TEXTURES,
+		NUM_TFX_TEXTURES = NUM_TFX_DRAW_TEXTURES + NUM_TFX_RT_TEXTURES,
 		NUM_CONVERT_TEXTURES = 1,
 		NUM_CONVERT_SAMPLERS = 1,
 		CONVERT_PUSH_CONSTANTS_SIZE = 96,
@@ -83,6 +83,8 @@ public:
 		INDEX_BUFFER_SIZE = 16 * 1024 * 1024,
 		VERTEX_UNIFORM_BUFFER_SIZE = 8 * 1024 * 1024,
 		FRAGMENT_UNIFORM_BUFFER_SIZE = 8 * 1024 * 1024,
+
+		NUM_CAS_PIPELINES = 2,
 	};
 	enum DATE_RENDER_PASS : u32
 	{
@@ -105,11 +107,6 @@ private:
 	Vulkan::StreamBuffer m_vertex_uniform_stream_buffer;
 	Vulkan::StreamBuffer m_fragment_uniform_stream_buffer;
 
-	VmaAllocation m_readback_staging_allocation = VK_NULL_HANDLE;
-	VkBuffer m_readback_staging_buffer = VK_NULL_HANDLE;
-	void* m_readback_staging_buffer_map = nullptr;
-	u32 m_readback_staging_buffer_size = 0;
-
 	VkSampler m_point_sampler = VK_NULL_HANDLE;
 	VkSampler m_linear_sampler = VK_NULL_HANDLE;
 
@@ -119,7 +116,7 @@ private:
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 16> m_color_copy{};
 	std::array<VkPipeline, 2> m_merge{};
-	std::array<VkPipeline, 4> m_interlace{};
+	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};
 	VkPipeline m_hdr_setup_pipelines[2][2] = {}; // [depth][feedback_loop]
 	VkPipeline m_hdr_finish_pipelines[2][2] = {}; // [depth][feedback_loop]
 	VkRenderPass m_date_image_setup_render_passes[2][2] = {}; // [depth][clear]
@@ -143,6 +140,10 @@ private:
 
 	VkRenderPass m_tfx_render_pass[2][2][2][3][2][3][3] = {}; // [rt][ds][hdr][date][fbl][rt_op][ds_op]
 
+	VkDescriptorSetLayout m_cas_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_cas_pipeline_layout = VK_NULL_HANDLE;
+	std::array<VkPipeline, NUM_CAS_PIPELINES> m_cas_pipelines = {};
+
 	GSHWDrawConfig::VSConstantBuffer m_vs_cb_cache;
 	GSHWDrawConfig::PSConstantBuffer m_ps_cb_cache;
 
@@ -153,10 +154,12 @@ private:
 	GSTexture* CreateSurface(GSTexture::Type type, int width, int height, int levels, GSTexture::Format format) override;
 
 	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const GSRegPMODE& PMODE,
-		const GSRegEXTBUF& EXTBUF, const GSVector4& c) final;
-	void DoInterlace(GSTexture* sTex, GSTexture* dTex, int shader, bool linear, float yoffset = 0) final;
+		const GSRegEXTBUF& EXTBUF, const GSVector4& c, const bool linear) final;
+	void DoInterlace(GSTexture* sTex, GSTexture* dTex, int shader, bool linear, float yoffset = 0, int bufIdx = 0) final;
 	void DoShadeBoost(GSTexture* sTex, GSTexture* dTex, const float params[4]) final;
 	void DoFXAA(GSTexture* sTex, GSTexture* dTex) final;
+
+	bool DoCAS(GSTexture* sTex, GSTexture* dTex, bool sharpen_only, const std::array<u32, NUM_CAS_CONSTANTS>& constants) final;
 
 	VkSampler GetSampler(GSHWDrawConfig::SamplerSelector ss);
 	void ClearSamplerCache() final;
@@ -181,9 +184,7 @@ private:
 	bool CompileInterlacePipelines();
 	bool CompileMergePipelines();
 	bool CompilePostProcessingPipelines();
-
-	bool CheckStagingBufferSize(u32 required_size);
-	void DestroyStagingBuffer();
+	bool CompileCASPipelines();
 
 	void DestroyResources();
 
@@ -201,7 +202,7 @@ public:
 	__fi VkSampler GetPointSampler() const { return m_point_sampler; }
 	__fi VkSampler GetLinearSampler() const { return m_linear_sampler; }
 
-	bool Create(HostDisplay* display) override;
+	bool Create() override;
 	void Destroy() override;
 
 	void ResetAPIState() override;
@@ -221,8 +222,7 @@ public:
 	void ClearDepth(GSTexture* t) override;
 	void ClearStencil(GSTexture* t, u8 c) override;
 
-	bool DownloadTexture(GSTexture* src, const GSVector4i& rect, GSTexture::GSMap& out_map) override;
-	void DownloadTextureComplete() override;
+	std::unique_ptr<GSDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format) override;
 
 	void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
 
@@ -232,8 +232,11 @@ public:
 		bool green, bool blue, bool alpha) override;
 	void PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		PresentShader shader, float shaderTime, bool linear) override;
+	void DrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvert shader) override;
+	void DoMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTextureVK* dTex, ShaderConvert shader);
 
-	void BeginRenderPassForStretchRect(GSTextureVK* dTex, const GSVector4i& dtex_rc, const GSVector4i& dst_rc);
+	void BeginRenderPassForStretchRect(
+		GSTextureVK* dTex, const GSVector4i& dtex_rc, const GSVector4i& dst_rc, bool allow_discard = true);
 	void DoStretchRect(GSTextureVK* sTex, const GSVector4& sRect, GSTextureVK* dTex, const GSVector4& dRect,
 		VkPipeline pipeline, bool linear);
 	void DrawStretchRect(const GSVector4& sRect, const GSVector4& dRect, const GSVector2i& ds);
@@ -241,16 +244,17 @@ public:
 	void BlitRect(GSTexture* sTex, const GSVector4i& sRect, u32 sLevel, GSTexture* dTex, const GSVector4i& dRect,
 		u32 dLevel, bool linear);
 
+	void UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize) override;
+	void ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM) override;
+
 	void SetupDATE(GSTexture* rt, GSTexture* ds, bool datm, const GSVector4i& bbox);
 	GSTextureVK* SetupPrimitiveTrackingDATE(GSHWDrawConfig& config);
 
 	void IASetVertexBuffer(const void* vertex, size_t stride, size_t count);
-	bool IAMapVertexBuffer(void** vertex, size_t stride, size_t count);
-	void IAUnmapVertexBuffer();
 	void IASetIndexBuffer(const void* index, size_t count);
 
 	void PSSetShaderResource(int i, GSTexture* sr, bool check_state);
-	void PSSetSampler(u32 index, GSHWDrawConfig::SamplerSelector sel);
+	void PSSetSampler(GSHWDrawConfig::SamplerSelector sel);
 
 	void OMSetRenderTargets(GSTexture* rt, GSTexture* ds, const GSVector4i& scissor, bool feedback_loop);
 
@@ -260,7 +264,7 @@ public:
 
 	void RenderHW(GSHWDrawConfig& config) override;
 	void UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelector& pipe);
-	void SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt);
+	void SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, bool skip_first_barrier);
 
 	//////////////////////////////////////////////////////////////////////////
 	// Vulkan State
@@ -273,7 +277,8 @@ public:
 	/// Ends any render pass, executes the command buffer, and invalidates cached state.
 	void ExecuteCommandBuffer(bool wait_for_completion);
 	void ExecuteCommandBuffer(bool wait_for_completion, const char* reason, ...);
-	void ExecuteCommandBufferAndRestartRenderPass(const char* reason);
+	void ExecuteCommandBufferAndRestartRenderPass(bool wait_for_completion, const char* reason);
+	void ExecuteCommandBufferForReadback();
 
 	/// Set dirty flags on everything to force re-bind at next draw time.
 	void InvalidateCachedState();
@@ -343,6 +348,7 @@ private:
 	// Which bindings/state has to be updated before the next draw.
 	u32 m_dirty_flags = 0;
 	bool m_current_framebuffer_has_feedback_loop = false;
+	bool m_warned_slow_spin = false;
 
 	// input assembly
 	VkBuffer m_vertex_buffer = VK_NULL_HANDLE;
@@ -362,8 +368,8 @@ private:
 	u8 m_blend_constant_color = 0;
 
 	std::array<VkImageView, NUM_TFX_TEXTURES> m_tfx_textures{};
-	std::array<VkSampler, NUM_TFX_SAMPLERS> m_tfx_samplers{};
-	std::array<u32, NUM_TFX_SAMPLERS> m_tfx_sampler_sel{};
+	VkSampler m_tfx_sampler = VK_NULL_HANDLE;
+	u32 m_tfx_sampler_sel = 0;
 	std::array<VkDescriptorSet, NUM_TFX_DESCRIPTOR_SETS> m_tfx_descriptor_sets{};
 	std::array<u32, NUM_TFX_DYNAMIC_OFFSETS> m_tfx_dynamic_offsets{};
 

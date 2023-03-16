@@ -41,6 +41,7 @@ namespace PAD
 	struct MacroButton
 	{
 		std::vector<u32> buttons; ///< Buttons to activate.
+		float pressure; ///< Pressure to apply when macro is active.
 		u32 toggle_frequency; ///< Interval at which the buttons will be toggled, if not 0.
 		u32 toggle_counter; ///< When this counter reaches zero, buttons will be toggled.
 		bool toggle_state; ///< Current state for turbo.
@@ -173,9 +174,9 @@ s32 PADfreeze(FreezeAction mode, freezeData* data)
 	return 0;
 }
 
-u8 PADstartPoll(int pad)
+u8 PADstartPoll(int _port, int _slot)
 {
-	return pad_start_poll(pad);
+	return pad_start_poll(_port, _slot);
 }
 
 u8 PADpoll(u8 value)
@@ -183,65 +184,14 @@ u8 PADpoll(u8 value)
 	return pad_poll(value);
 }
 
-const char* PAD::ControllerSettingInfo::StringDefaultValue() const
-{
-	return default_value ? default_value : "";
-}
-
-bool PAD::ControllerSettingInfo::BooleanDefaultValue() const
-{
-	return default_value ? StringUtil::FromChars<bool>(default_value).value_or(false) : false;
-}
-
-s32 PAD::ControllerSettingInfo::IntegerDefaultValue() const
-{
-	return default_value ? StringUtil::FromChars<s32>(default_value).value_or(0) : 0;
-}
-
-s32 PAD::ControllerSettingInfo::IntegerMinValue() const
-{
-	static constexpr s32 fallback_value = std::numeric_limits<s32>::min();
-	return min_value ? StringUtil::FromChars<s32>(min_value).value_or(fallback_value) : fallback_value;
-}
-
-s32 PAD::ControllerSettingInfo::IntegerMaxValue() const
-{
-	static constexpr s32 fallback_value = std::numeric_limits<s32>::max();
-	return max_value ? StringUtil::FromChars<s32>(max_value).value_or(fallback_value) : fallback_value;
-}
-
-s32 PAD::ControllerSettingInfo::IntegerStepValue() const
-{
-	static constexpr s32 fallback_value = 1;
-	return step_value ? StringUtil::FromChars<s32>(step_value).value_or(fallback_value) : fallback_value;
-}
-
-float PAD::ControllerSettingInfo::FloatDefaultValue() const
-{
-	return default_value ? StringUtil::FromChars<float>(default_value).value_or(0.0f) : 0.0f;
-}
-
-float PAD::ControllerSettingInfo::FloatMinValue() const
-{
-	static constexpr float fallback_value = std::numeric_limits<float>::min();
-	return min_value ? StringUtil::FromChars<float>(min_value).value_or(fallback_value) : fallback_value;
-}
-
-float PAD::ControllerSettingInfo::FloatMaxValue() const
-{
-	static constexpr float fallback_value = std::numeric_limits<float>::max();
-	return max_value ? StringUtil::FromChars<float>(max_value).value_or(fallback_value) : fallback_value;
-}
-
-float PAD::ControllerSettingInfo::FloatStepValue() const
-{
-	static constexpr float fallback_value = 0.1f;
-	return step_value ? StringUtil::FromChars<float>(step_value).value_or(fallback_value) : fallback_value;
-}
-
 std::string PAD::GetConfigSection(u32 pad_index)
 {
 	return fmt::format("Pad{}", pad_index + 1);
+}
+
+bool PADcomplete()
+{
+	return pad_complete();
 }
 
 void PAD::LoadConfig(const SettingsInterface& si)
@@ -268,7 +218,12 @@ void PAD::LoadConfig(const SettingsInterface& si)
 
 		const float axis_deadzone = si.GetFloatValue(section.c_str(), "Deadzone", DEFAULT_STICK_DEADZONE);
 		const float axis_scale = si.GetFloatValue(section.c_str(), "AxisScale", DEFAULT_STICK_SCALE);
+		const float trigger_deadzone = si.GetFloatValue(section.c_str(), "TriggerDeadzone", DEFAULT_TRIGGER_DEADZONE);
+		const float trigger_scale = si.GetFloatValue(section.c_str(), "TriggerScale", DEFAULT_TRIGGER_SCALE);
+		const float button_deadzone = si.GetFloatValue(section.c_str(), "ButtonDeadzone", DEFAULT_BUTTON_DEADZONE);
 		g_key_status.SetAxisScale(i, axis_deadzone, axis_scale);
+		g_key_status.SetTriggerScale(i, trigger_deadzone, trigger_scale);
+		g_key_status.SetButtonDeadzone(i, button_deadzone);
 
 		if (ci->vibration_caps != VibrationCapabilities::NoVibration)
 		{
@@ -281,6 +236,11 @@ void PAD::LoadConfig(const SettingsInterface& si)
 		const float pressure_modifier = si.GetFloatValue(section.c_str(), "PressureModifier", 1.0f);
 		g_key_status.SetPressureModifier(i, pressure_modifier);
 
+		const int invert_l = si.GetIntValue(section.c_str(), "InvertL", 0);
+		const int invert_r = si.GetIntValue(section.c_str(), "InvertR", 0);
+		g_key_status.SetAnalogInvertL(i, (invert_l & 1) != 0, (invert_l & 2) != 0);
+		g_key_status.SetAnalogInvertR(i, (invert_r & 1) != 0, (invert_r & 2) != 0);
+
 		LoadMacroButtonConfig(si, i, type, section);
 	}
 }
@@ -290,41 +250,75 @@ const char* PAD::GetDefaultPadType(u32 pad)
 	return (pad == 0) ? "DualShock2" : "None";
 }
 
-void PAD::SetDefaultConfig(SettingsInterface& si)
+void PAD::SetDefaultControllerConfig(SettingsInterface& si)
 {
 	si.ClearSection("InputSources");
 	si.ClearSection("Hotkeys");
 	si.ClearSection("Pad");
 
 	// PCSX2 Controller Settings - Global Settings
-	si.SetBoolValue("InputSources", "SDL", true);
+	for (u32 i = 0; i < static_cast<u32>(InputSourceType::Count); i++)
+	{
+		si.SetBoolValue("InputSources",
+			InputManager::InputSourceToString(static_cast<InputSourceType>(i)),
+			InputManager::GetInputSourceDefaultEnabled(static_cast<InputSourceType>(i)));
+	}
+#ifdef SDL_BUILD
 	si.SetBoolValue("InputSources", "SDLControllerEnhancedMode", false);
-	si.SetBoolValue("InputSources", "XInput", false);
-	si.SetBoolValue("InputSources", "RawInput", false);
+#endif
 	si.SetBoolValue("Pad", "MultitapPort1", false);
 	si.SetBoolValue("Pad", "MultitapPort2", false);
-	si.SetFloatValue("Pad", "PointerXScale", 8.0f);
-	si.SetFloatValue("Pad", "PointerYScale", 8.0f);
-	si.SetBoolValue("Pad", "PointerXInvert", false);
-	si.SetBoolValue("Pad", "PointerYInvert", false);
+	si.SetFloatValue("Pad", "PointerXSpeed", 40.0f);
+	si.SetFloatValue("Pad", "PointerYSpeed", 40.0f);
+	si.SetFloatValue("Pad", "PointerXDeadZone", 20.0f);
+	si.SetFloatValue("Pad", "PointerYDeadZone", 20.0f);
+	si.SetFloatValue("Pad", "PointerInertia", 10.0f);
 
 	// PCSX2 Controller Settings - Default pad types and parameters.
 	for (u32 i = 0; i < NUM_CONTROLLER_PORTS; i++)
 	{
+		const char* type = GetDefaultPadType(i);
 		const std::string section(GetConfigSection(i));
 		si.ClearSection(section.c_str());
-		si.SetStringValue(section.c_str(), "Type", GetDefaultPadType(i));
-		si.SetFloatValue(section.c_str(), "Deadzone", DEFAULT_STICK_DEADZONE);
-		si.SetFloatValue(section.c_str(), "AxisScale", DEFAULT_STICK_SCALE);
-		si.SetFloatValue(section.c_str(), "LargeMotorScale", DEFAULT_MOTOR_SCALE);
-		si.SetFloatValue(section.c_str(), "SmallMotorScale", DEFAULT_MOTOR_SCALE);
-		si.SetFloatValue(section.c_str(), "PressureModifier", DEFAULT_PRESSURE_MODIFIER);
+		si.SetStringValue(section.c_str(), "Type", type);
+
+		const ControllerInfo* ci = GetControllerInfo(type);
+		if (ci)
+		{
+			for (u32 i = 0; i < ci->num_settings; i++)
+			{
+				const SettingInfo& csi = ci->settings[i];
+				switch (csi.type)
+				{
+					case SettingInfo::Type::Boolean:
+						si.SetBoolValue(section.c_str(), csi.name, csi.BooleanDefaultValue());
+						break;
+					case SettingInfo::Type::Integer:
+					case SettingInfo::Type::IntegerList:
+						si.SetIntValue(section.c_str(), csi.name, csi.IntegerDefaultValue());
+						break;
+					case SettingInfo::Type::Float:
+						si.SetFloatValue(section.c_str(), csi.name, csi.FloatDefaultValue());
+						break;
+					case SettingInfo::Type::String:
+					case SettingInfo::Type::StringList:
+					case SettingInfo::Type::Path:
+						si.SetStringValue(section.c_str(), csi.name, csi.StringDefaultValue());
+						break;
+					default:
+						break;
+				}
+			}
+		}
 	}
 
 	// PCSX2 Controller Settings - Controller 1 / Controller 2 / ...
 	// Use the automapper to set this up.
 	MapController(si, 0, InputManager::GetGenericBindingMapping("Keyboard"));
+}
 
+void PAD::SetDefaultHotkeyConfig(SettingsInterface& si)
+{
 	// PCSX2 Controller Settings - Hotkeys
 
 	// PCSX2 Controller Settings - Hotkeys - General
@@ -361,7 +355,8 @@ void PAD::SetDefaultConfig(SettingsInterface& si)
 	//  si.SetStringValue("Hotkeys", "FrameAdvance", "Keyboard"); TBD
 	//	si.SetStringValue("Hotkeys", "IncreaseSpeed", "Keyboard"); TBD
 	//  si.SetStringValue("Hotkeys", "ResetVM", "Keyboard"); TBD
-	si.SetStringValue("Hotkeys", "ShutdownVM", "Keyboard/Escape");
+	//  si.SetStringValue("Hotkeys", "ShutdownVM", "Keyboard"); TBD
+	si.SetStringValue("Hotkeys", "OpenPauseMenu", "Keyboard/Escape");
 	si.SetStringValue("Hotkeys", "ToggleFrameLimit", "Keyboard/F4");
 	si.SetStringValue("Hotkeys", "TogglePause", "Keyboard/Space");
 	si.SetStringValue("Hotkeys", "ToggleSlowMotion", "Keyboard/Shift & Keyboard/Backtab");
@@ -375,51 +370,79 @@ void PAD::Update()
 	UpdateMacroButtons();
 }
 
-static const PAD::ControllerBindingInfo s_dualshock2_binds[] = {
-	{"Up", "D-Pad Up", PAD::ControllerBindingType::Button, GenericInputBinding::DPadUp},
-	{"Right", "D-Pad Right", PAD::ControllerBindingType::Button, GenericInputBinding::DPadRight},
-	{"Down", "D-Pad Down", PAD::ControllerBindingType::Button, GenericInputBinding::DPadDown},
-	{"Left", "D-Pad Left", PAD::ControllerBindingType::Button, GenericInputBinding::DPadLeft},
-	{"Triangle", "Triangle", PAD::ControllerBindingType::Button, GenericInputBinding::Triangle},
-	{"Circle", "Circle", PAD::ControllerBindingType::Button, GenericInputBinding::Circle},
-	{"Cross", "Cross", PAD::ControllerBindingType::Button, GenericInputBinding::Cross},
-	{"Square", "Square", PAD::ControllerBindingType::Button, GenericInputBinding::Square},
-	{"Select", "Select", PAD::ControllerBindingType::Button, GenericInputBinding::Select},
-	{"Start", "Start", PAD::ControllerBindingType::Button, GenericInputBinding::Start},
-	{"L1", "L1 (Left Bumper)", PAD::ControllerBindingType::Button, GenericInputBinding::L1},
-	{"L2", "L2 (Left Trigger)", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::L2},
-	{"R1", "R1 (Right Bumper)", PAD::ControllerBindingType::Button, GenericInputBinding::R1},
-	{"R2", "R2 (Right Trigger)", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::R2},
-	{"L3", "L3 (Left Stick Button)", PAD::ControllerBindingType::Button, GenericInputBinding::L3},
-	{"R3", "R3 (Right Stick Button)", PAD::ControllerBindingType::Button, GenericInputBinding::R3},
-	{"Analog", "Analog Toggle", PAD::ControllerBindingType::Button, GenericInputBinding::System},
-	{"Pressure", "Apply Pressure", PAD::ControllerBindingType::Button, GenericInputBinding::Unknown},
-	{"LUp", "Left Stick Up", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::LeftStickUp},
-	{"LRight", "Left Stick Right", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::LeftStickRight},
-	{"LDown", "Left Stick Down", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::LeftStickDown},
-	{"LLeft", "Left Stick Left", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::LeftStickLeft},
-	{"RUp", "Right Stick Up", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::RightStickUp},
-	{"RRight", "Right Stick Right", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::RightStickRight},
-	{"RDown", "Right Stick Down", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::RightStickDown},
-	{"RLeft", "Right Stick Left", PAD::ControllerBindingType::HalfAxis, GenericInputBinding::RightStickLeft},
-	{"LargeMotor", "Large (Low Frequency) Motor", PAD::ControllerBindingType::Motor, GenericInputBinding::LargeMotor},
-	{"SmallMotor", "Small (High Frequency) Motor", PAD::ControllerBindingType::Motor, GenericInputBinding::SmallMotor},
+static const InputBindingInfo s_dualshock2_binds[] = {
+	{"Up", "D-Pad Up", InputBindingInfo::Type::Button, PAD_UP, GenericInputBinding::DPadUp},
+	{"Right", "D-Pad Right", InputBindingInfo::Type::Button, PAD_RIGHT, GenericInputBinding::DPadRight},
+	{"Down", "D-Pad Down", InputBindingInfo::Type::Button, PAD_DOWN, GenericInputBinding::DPadDown},
+	{"Left", "D-Pad Left", InputBindingInfo::Type::Button, PAD_LEFT, GenericInputBinding::DPadLeft},
+	{"Triangle", "Triangle", InputBindingInfo::Type::Button, PAD_TRIANGLE, GenericInputBinding::Triangle},
+	{"Circle", "Circle", InputBindingInfo::Type::Button, PAD_CIRCLE, GenericInputBinding::Circle},
+	{"Cross", "Cross", InputBindingInfo::Type::Button, PAD_CROSS, GenericInputBinding::Cross},
+	{"Square", "Square", InputBindingInfo::Type::Button, PAD_SQUARE, GenericInputBinding::Square},
+	{"Select", "Select", InputBindingInfo::Type::Button, PAD_SELECT, GenericInputBinding::Select},
+	{"Start", "Start", InputBindingInfo::Type::Button, PAD_START, GenericInputBinding::Start},
+	{"L1", "L1 (Left Bumper)", InputBindingInfo::Type::Button, PAD_L1, GenericInputBinding::L1},
+	{"L2", "L2 (Left Trigger)", InputBindingInfo::Type::HalfAxis, PAD_L2, GenericInputBinding::L2},
+	{"R1", "R1 (Right Bumper)", InputBindingInfo::Type::Button, PAD_R1, GenericInputBinding::R1},
+	{"R2", "R2 (Right Trigger)", InputBindingInfo::Type::HalfAxis, PAD_R2, GenericInputBinding::R2},
+	{"L3", "L3 (Left Stick Button)", InputBindingInfo::Type::Button, PAD_L3, GenericInputBinding::L3},
+	{"R3", "R3 (Right Stick Button)", InputBindingInfo::Type::Button, PAD_R3, GenericInputBinding::R3},
+	{"Analog", "Analog Toggle", InputBindingInfo::Type::Button, PAD_ANALOG, GenericInputBinding::System},
+	{"Pressure", "Apply Pressure", InputBindingInfo::Type::Button, PAD_PRESSURE, GenericInputBinding::Unknown},
+	{"LUp", "Left Stick Up", InputBindingInfo::Type::HalfAxis, PAD_L_UP, GenericInputBinding::LeftStickUp},
+	{"LRight", "Left Stick Right", InputBindingInfo::Type::HalfAxis, PAD_L_RIGHT, GenericInputBinding::LeftStickRight},
+	{"LDown", "Left Stick Down", InputBindingInfo::Type::HalfAxis, PAD_L_DOWN, GenericInputBinding::LeftStickDown},
+	{"LLeft", "Left Stick Left", InputBindingInfo::Type::HalfAxis, PAD_L_LEFT, GenericInputBinding::LeftStickLeft},
+	{"RUp", "Right Stick Up", InputBindingInfo::Type::HalfAxis, PAD_R_UP, GenericInputBinding::RightStickUp},
+	{"RRight", "Right Stick Right", InputBindingInfo::Type::HalfAxis, PAD_R_RIGHT, GenericInputBinding::RightStickRight},
+	{"RDown", "Right Stick Down", InputBindingInfo::Type::HalfAxis, PAD_R_DOWN, GenericInputBinding::RightStickDown},
+	{"RLeft", "Right Stick Left", InputBindingInfo::Type::HalfAxis, PAD_R_LEFT, GenericInputBinding::RightStickLeft},
+	{"LargeMotor", "Large (Low Frequency) Motor", InputBindingInfo::Type::Motor, 0, GenericInputBinding::LargeMotor},
+	{"SmallMotor", "Small (High Frequency) Motor", InputBindingInfo::Type::Motor, 0, GenericInputBinding::SmallMotor},
 };
 
-static const PAD::ControllerSettingInfo s_dualshock2_settings[] = {
-	{PAD::ControllerSettingInfo::Type::Float, "Deadzone", "Analog Deadzone",
+static const char* s_dualshock2_invert_entries[] = {
+	"Not Inverted",
+	"Invert Left/Right",
+	"Invert Up/Down",
+	"Invert Left/Right + Up/Down",
+	nullptr};
+
+static const SettingInfo s_dualshock2_settings[] = {
+	{SettingInfo::Type::IntegerList, "InvertL", "Invert Left Stick",
+		"Inverts the direction of the left analog stick.",
+		"0", "0", "3", nullptr, nullptr, s_dualshock2_invert_entries, nullptr, 0.0f},
+	{SettingInfo::Type::IntegerList, "InvertR", "Invert Right Stick",
+		"Inverts the direction of the right analog stick.",
+		"0", "0", "3", nullptr, nullptr, s_dualshock2_invert_entries, nullptr, 0.0f},
+	{SettingInfo::Type::Float, "Deadzone", "Analog Deadzone",
 		"Sets the analog stick deadzone, i.e. the fraction of the stick movement which will be ignored.",
-		"0.00", "0.00", "1.00", "0.01"},
-	{PAD::ControllerSettingInfo::Type::Float, "AxisScale", "Analog Sensitivity",
-		"Sets the analog stick axis scaling factor. A value between 1.30 and 1.40 is recommended when using recent "
+		"0.00", "0.00", "1.00", "0.01", "%.0f%%", nullptr, nullptr, 100.0f},
+	{SettingInfo::Type::Float, "AxisScale", "Analog Sensitivity",
+		"Sets the analog stick axis scaling factor. A value between 130% and 140% is recommended when using recent "
 		"controllers, e.g. DualShock 4, Xbox One Controller.",
-		"1.33", "0.01", "2.00", "0.01"},
-	{PAD::ControllerSettingInfo::Type::Float, "LargeMotorScale", "Large Motor Vibration Scale",
+		"1.33", "0.01", "2.00", "0.01", "%.0f%%", nullptr, nullptr, 100.0f},
+	{SettingInfo::Type::Float, "TriggerDeadzone", "Trigger Deadzone",
+		"Sets the deadzone for activating triggers, i.e. the fraction of the trigger which will be ignored.",
+		"0.00", "0.00", "1.00", "0.01", "%.0f%%", nullptr, nullptr, 100.0f},
+	{SettingInfo::Type::Float, "TriggerScale", "Trigger Sensitivity",
+		"Sets the trigger scaling factor.",
+		"1.00", "0.01", "2.00", "0.01", "%.0f%%", nullptr, nullptr, 100.0f},
+	{SettingInfo::Type::Float, "LargeMotorScale", "Large Motor Vibration Scale",
 		"Increases or decreases the intensity of low frequency vibration sent by the game.",
-		"1.00", "0.00", "2.00", "0.01"},
-	{PAD::ControllerSettingInfo::Type::Float, "SmallMotorScale", "Small Motor Vibration Scale",
+		"1.00", "0.00", "2.00", "0.01", "%.0f%%", nullptr, nullptr, 100.0f},
+	{SettingInfo::Type::Float, "SmallMotorScale", "Small Motor Vibration Scale",
 		"Increases or decreases the intensity of high frequency vibration sent by the game.",
-		"1.00", "0.00", "2.00", "0.01"},
+		"1.00", "0.00", "2.00", "0.01", "%.0f%%", nullptr, nullptr, 100.0f},
+	{SettingInfo::Type::Float, "ButtonDeadzone", "Button Deadzone",
+		"Sets the deadzone for activating buttons, i.e. the fraction of the button push which will be ignored.",
+		"0.00", "0.00", "1.00", "0.01", "%.0f%%", nullptr, nullptr, 100.0f},
+	/*{SettingInfo::Type::Float, "InitialPressure", "Initial Pressure",
+	"Sets the pressure when the modifier button isn't held.",
+	"1.00", "0.01", "1.00", "0.01", "%.0f%%", nullptr, nullptr, 100.0f},*/
+	{SettingInfo::Type::Float, "PressureModifier", "Modifier Pressure",
+		"Sets the pressure when the modifier button is held.",
+		"0.50", "0.01", "1.00", "0.01", "%.0f%%", nullptr, nullptr, 100.0f},
 };
 
 static const PAD::ControllerInfo s_controller_info[] = {
@@ -473,8 +496,8 @@ std::vector<std::string> PAD::GetControllerBinds(const std::string_view& type)
 	{
 		for (u32 i = 0; i < info->num_bindings; i++)
 		{
-			const ControllerBindingInfo& bi = info->bindings[i];
-			if (bi.type == ControllerBindingType::Unknown || bi.type == ControllerBindingType::Motor)
+			const InputBindingInfo& bi = info->bindings[i];
+			if (bi.bind_type == InputBindingInfo::Type::Unknown || bi.bind_type == InputBindingInfo::Type::Motor)
 				continue;
 
 			ret.emplace_back(info->bindings[i].name);
@@ -494,7 +517,12 @@ void PAD::ClearPortBindings(SettingsInterface& si, u32 port)
 		return;
 
 	for (u32 i = 0; i < info->num_bindings; i++)
-		si.DeleteValue(section.c_str(), info->bindings[i].name);
+	{
+		const InputBindingInfo& bi = info->bindings[i];
+		si.DeleteValue(section.c_str(), bi.name);
+		si.DeleteValue(section.c_str(), fmt::format("{}Scale", bi.name).c_str());
+		si.DeleteValue(section.c_str(), fmt::format("{}Deadzone", bi.name).c_str());
+	}
 }
 
 void PAD::CopyConfiguration(SettingsInterface* dest_si, const SettingsInterface& src_si,
@@ -504,6 +532,21 @@ void PAD::CopyConfiguration(SettingsInterface* dest_si, const SettingsInterface&
 	{
 		dest_si->CopyBoolValue(src_si, "Pad", "MultitapPort1");
 		dest_si->CopyBoolValue(src_si, "Pad", "MultitapPort2");
+		dest_si->CopyBoolValue(src_si, "Pad", "MultitapPort1");
+		dest_si->CopyBoolValue(src_si, "Pad", "MultitapPort2");
+		dest_si->CopyFloatValue(src_si, "Pad", "PointerXSpeed");
+		dest_si->CopyFloatValue(src_si, "Pad", "PointerYSpeed");
+		dest_si->CopyFloatValue(src_si, "Pad", "PointerXDeadZone");
+		dest_si->CopyFloatValue(src_si, "Pad", "PointerYDeadZone");
+		dest_si->CopyFloatValue(src_si, "Pad", "PointerInertia");
+		for (u32 i = 0; i < static_cast<u32>(InputSourceType::Count); i++)
+		{
+			dest_si->CopyBoolValue(src_si, "InputSources",
+				InputManager::InputSourceToString(static_cast<InputSourceType>(i)));
+		}
+#ifdef SDL_BUILD
+		dest_si->CopyBoolValue(src_si, "InputSources", "SDLControllerEnhancedMode");
+#endif
 	}
 
 	for (u32 port = 0; port < NUM_CONTROLLER_PORTS; port++)
@@ -521,8 +564,10 @@ void PAD::CopyConfiguration(SettingsInterface* dest_si, const SettingsInterface&
 		{
 			for (u32 i = 0; i < info->num_bindings; i++)
 			{
-				const ControllerBindingInfo& bi = info->bindings[i];
+				const InputBindingInfo& bi = info->bindings[i];
 				dest_si->CopyStringListValue(src_si, section.c_str(), bi.name);
+				dest_si->CopyFloatValue(src_si, section.c_str(), fmt::format("{}Sensitivity", bi.name).c_str());
+				dest_si->CopyFloatValue(src_si, section.c_str(), fmt::format("{}Deadzone", bi.name).c_str());
 			}
 
 			for (u32 i = 0; i < NUM_MACRO_BUTTONS_PER_CONTROLLER; i++)
@@ -530,17 +575,35 @@ void PAD::CopyConfiguration(SettingsInterface* dest_si, const SettingsInterface&
 				dest_si->CopyStringListValue(src_si, section.c_str(), fmt::format("Macro{}", i + 1).c_str());
 				dest_si->CopyStringValue(src_si, section.c_str(), fmt::format("Macro{}Binds", i + 1).c_str());
 				dest_si->CopyUIntValue(src_si, section.c_str(), fmt::format("Macro{}Frequency", i + 1).c_str());
+				dest_si->CopyFloatValue(src_si, section.c_str(), fmt::format("Macro{}Pressure", i + 1).c_str());
 			}
 		}
 
 		if (copy_pad_config)
 		{
-			dest_si->CopyFloatValue(src_si, section.c_str(), "AxisScale");
-
-			if (info->vibration_caps != VibrationCapabilities::NoVibration)
+			for (u32 i = 0; i < info->num_settings; i++)
 			{
-				dest_si->CopyFloatValue(src_si, section.c_str(), "LargeMotorScale");
-				dest_si->CopyFloatValue(src_si, section.c_str(), "SmallMotorScale");
+				const SettingInfo& csi = info->settings[i];
+				switch (csi.type)
+				{
+					case SettingInfo::Type::Boolean:
+						dest_si->CopyBoolValue(src_si, section.c_str(), csi.name);
+						break;
+					case SettingInfo::Type::Integer:
+					case SettingInfo::Type::IntegerList:
+						dest_si->CopyIntValue(src_si, section.c_str(), csi.name);
+						break;
+					case SettingInfo::Type::Float:
+						dest_si->CopyFloatValue(src_si, section.c_str(), csi.name);
+						break;
+					case SettingInfo::Type::String:
+					case SettingInfo::Type::StringList:
+					case SettingInfo::Type::Path:
+						dest_si->CopyStringValue(src_si, section.c_str(), csi.name);
+						break;
+					default:
+						break;
+				}
 			}
 		}
 	}
@@ -553,15 +616,9 @@ void PAD::CopyConfiguration(SettingsInterface* dest_si, const SettingsInterface&
 	}
 }
 
-PAD::VibrationCapabilities PAD::GetControllerVibrationCapabilities(const std::string_view& type)
-{
-	const ControllerInfo* info = GetControllerInfo(type);
-	return info ? info->vibration_caps : VibrationCapabilities::NoVibration;
-}
-
 static u32 TryMapGenericMapping(SettingsInterface& si, const std::string& section,
-	const GenericInputBindingMapping& mapping, GenericInputBinding generic_name,
-	const char* bind_name)
+	const InputManager::GenericInputBindingMapping& mapping, InputBindingInfo::Type bind_type,
+	GenericInputBinding generic_name, const char* bind_name)
 {
 	// find the mapping it corresponds to
 	const std::string* found_mapping = nullptr;
@@ -572,6 +629,14 @@ static u32 TryMapGenericMapping(SettingsInterface& si, const std::string& sectio
 			found_mapping = &it.second;
 			break;
 		}
+	}
+
+	// Remove previously-set binding scales.
+	if (bind_type == InputBindingInfo::Type::Button || bind_type == InputBindingInfo::Type::Axis ||
+		bind_type == InputBindingInfo::Type::HalfAxis)
+	{
+		si.DeleteValue(section.c_str(), fmt::format("{}Scale", bind_name).c_str());
+		si.DeleteValue(section.c_str(), fmt::format("{}Deadzone", bind_name).c_str());
 	}
 
 	if (found_mapping)
@@ -600,21 +665,21 @@ bool PAD::MapController(SettingsInterface& si, u32 controller,
 	u32 num_mappings = 0;
 	for (u32 i = 0; i < info->num_bindings; i++)
 	{
-		const ControllerBindingInfo& bi = info->bindings[i];
+		const InputBindingInfo& bi = info->bindings[i];
 		if (bi.generic_mapping == GenericInputBinding::Unknown)
 			continue;
 
-		num_mappings += TryMapGenericMapping(si, section, mapping, bi.generic_mapping, bi.name);
+		num_mappings += TryMapGenericMapping(si, section, mapping, bi.bind_type, bi.generic_mapping, bi.name);
 	}
 	if (info->vibration_caps == VibrationCapabilities::LargeSmallMotors)
 	{
-		num_mappings += TryMapGenericMapping(si, section, mapping, GenericInputBinding::SmallMotor, "SmallMotor");
-		num_mappings += TryMapGenericMapping(si, section, mapping, GenericInputBinding::LargeMotor, "LargeMotor");
+		num_mappings += TryMapGenericMapping(si, section, mapping, InputBindingInfo::Type::Motor, GenericInputBinding::SmallMotor, "SmallMotor");
+		num_mappings += TryMapGenericMapping(si, section, mapping, InputBindingInfo::Type::Motor, GenericInputBinding::LargeMotor, "LargeMotor");
 	}
 	else if (info->vibration_caps == VibrationCapabilities::SingleMotor)
 	{
-		if (TryMapGenericMapping(si, section, mapping, GenericInputBinding::LargeMotor, "Motor") == 0)
-			num_mappings += TryMapGenericMapping(si, section, mapping, GenericInputBinding::SmallMotor, "Motor");
+		if (TryMapGenericMapping(si, section, mapping, InputBindingInfo::Type::Motor, GenericInputBinding::LargeMotor, "Motor") == 0)
+			num_mappings += TryMapGenericMapping(si, section, mapping, InputBindingInfo::Type::Motor, GenericInputBinding::SmallMotor, "Motor");
 		else
 			num_mappings++;
 	}
@@ -638,12 +703,14 @@ void PAD::LoadMacroButtonConfig(const SettingsInterface& si, u32 pad, const std:
 	for (u32 i = 0; i < NUM_MACRO_BUTTONS_PER_CONTROLLER; i++)
 	{
 		std::string binds_string;
-		if (!si.GetStringValue(section.c_str(), StringUtil::StdStringFromFormat("Macro%uBinds", i + 1).c_str(), &binds_string))
+		if (!si.GetStringValue(section.c_str(), fmt::format("Macro{}Binds", i + 1).c_str(), &binds_string))
 			continue;
 
-		const u32 frequency = si.GetUIntValue(section.c_str(), StringUtil::StdStringFromFormat("Macro%uFrequency", i + 1).c_str(), 0u);
+		const u32 frequency = si.GetUIntValue(section.c_str(), fmt::format("Macro{}Frequency", i + 1).c_str(), 0u);
 		if (binds.empty())
 			binds = GetControllerBinds(type);
+
+		const float pressure = si.GetFloatValue(section.c_str(), fmt::format("Macro{}Pressure", i + 1).c_str(), 1.0f);
 
 		// convert binds
 		std::vector<u32> bind_indices;
@@ -666,6 +733,7 @@ void PAD::LoadMacroButtonConfig(const SettingsInterface& si, u32 pad, const std:
 
 		s_macro_buttons[pad][i].buttons = std::move(bind_indices);
 		s_macro_buttons[pad][i].toggle_frequency = frequency;
+		s_macro_buttons[pad][i].pressure = pressure;
 	}
 }
 
@@ -703,7 +771,7 @@ std::vector<std::string> PAD::GetInputProfileNames()
 
 void PAD::ApplyMacroButton(u32 pad, const MacroButton& mb)
 {
-	const float value = mb.toggle_state ? 1.0f : 0.0f;
+	const float value = mb.toggle_state ? mb.pressure : 0.0f;
 	for (const u32 btn : mb.buttons)
 		g_key_status.Set(pad, btn, value);
 }

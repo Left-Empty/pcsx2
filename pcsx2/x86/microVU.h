@@ -30,7 +30,7 @@ using namespace x86Emitter;
 #include "Gif_Unit.h"
 #include "iR5900.h"
 #include "R5900OpcodeTables.h"
-#include "System/RecTypes.h"
+#include "VirtualMemory.h"
 #include "common/emitter/x86emitter.h"
 #include "microVU_Misc.h"
 #include "microVU_IR.h"
@@ -43,11 +43,18 @@ struct microBlockLink
 	microBlockLink* next;
 };
 
+struct microBlockLinkRef
+{
+	microBlock* pBlock;
+	u64 quick;
+};
+
 class microBlockManager
 {
 private:
 	microBlockLink *qBlockList, *qBlockEnd; // Quick Search
 	microBlockLink *fBlockList, *fBlockEnd; // Full  Search
+	std::vector<microBlockLinkRef> quickLookup;
 	int qListI, fListI;
 
 public:
@@ -55,20 +62,20 @@ public:
 	microBlockManager()
 	{
 		qListI = fListI = 0;
-		qBlockEnd = qBlockList = NULL;
-		fBlockEnd = fBlockList = NULL;
+		qBlockEnd = qBlockList = nullptr;
+		fBlockEnd = fBlockList = nullptr;
 	}
 	~microBlockManager() { reset(); }
 	void reset()
 	{
-		for (microBlockLink* linkI = qBlockList; linkI != NULL;)
+		for (microBlockLink* linkI = qBlockList; linkI != nullptr;)
 		{
 			microBlockLink* freeI = linkI;
 			safe_delete_array(linkI->block.jumpCache);
 			linkI = linkI->next;
 			_aligned_free(freeI);
 		}
-		for (microBlockLink* linkI = fBlockList; linkI != NULL;)
+		for (microBlockLink* linkI = fBlockList; linkI != nullptr;)
 		{
 			microBlockLink* freeI = linkI;
 			safe_delete_array(linkI->block.jumpCache);
@@ -76,8 +83,9 @@ public:
 			_aligned_free(freeI);
 		}
 		qListI = fListI = 0;
-		qBlockEnd = qBlockList = NULL;
-		fBlockEnd = fBlockList = NULL;
+		qBlockEnd = qBlockList = nullptr;
+		fBlockEnd = fBlockList = nullptr;
+		quickLookup.clear();
 	};
 	microBlock* add(microBlock* pBlock)
 	{
@@ -92,9 +100,9 @@ public:
 
 			microBlockLink*& blockList = fullCmp ? fBlockList : qBlockList;
 			microBlockLink*& blockEnd  = fullCmp ? fBlockEnd  : qBlockEnd;
-			microBlockLink*  newBlock  = (microBlockLink*)_aligned_malloc(sizeof(microBlockLink), 16);
-			newBlock->block.jumpCache  = NULL;
-			newBlock->next = NULL;
+			microBlockLink*  newBlock  = (microBlockLink*)_aligned_malloc(sizeof(microBlockLink), 32);
+			newBlock->block.jumpCache  = nullptr;
+			newBlock->next             = nullptr;
 
 			if (blockEnd)
 			{
@@ -106,8 +114,10 @@ public:
 				blockEnd = blockList = newBlock;
 			}
 
-			memcpy(&newBlock->block, pBlock, sizeof(microBlock));
+			std::memcpy(&newBlock->block, pBlock, sizeof(microBlock));
 			thisBlock = &newBlock->block;
+
+			quickLookup.push_back({&newBlock->block, pBlock->pState.quick64[0]});
 		}
 		return thisBlock;
 	}
@@ -115,24 +125,34 @@ public:
 	{
 		if (pState->needExactMatch) // Needs Detailed Search (Exact Match of Pipeline State)
 		{
-			for (microBlockLink* linkI = fBlockList; linkI != NULL; linkI = linkI->next)
+			microBlockLink* prevI = nullptr;
+			for (microBlockLink* linkI = fBlockList; linkI != nullptr; prevI = linkI, linkI = linkI->next)
 			{
-				if (mVUquickSearch((void*)pState, (void*)&linkI->block.pState, sizeof(microRegInfo)))
+				if (mVUquickSearch(pState, &linkI->block.pState, sizeof(microRegInfo)))
+				{
+					if (linkI != fBlockList)
+					{
+						prevI->next = linkI->next;
+						linkI->next = fBlockList;
+						fBlockList = linkI;
+					}
+
 					return &linkI->block;
+				}
 			}
 		}
 		else // Can do Simple Search (Only Matches the Important Pipeline Stuff)
 		{
-			for (microBlockLink* linkI = qBlockList; linkI != NULL; linkI = linkI->next)
+			const u64 quick64 = pState->quick64[0];
+			for (const microBlockLinkRef& ref : quickLookup)
 			{
-				if (linkI->block.pState.quick32[0] != pState->quick32[0]) continue;
-				if (linkI->block.pState.quick32[1] != pState->quick32[1]) continue;
-				if (doConstProp && (linkI->block.pState.vi15  != pState->vi15))  continue;
-				if (doConstProp && (linkI->block.pState.vi15v != pState->vi15v)) continue;
-				return &linkI->block;
+				if (ref.quick != quick64) continue;
+				if (doConstProp && (ref.pBlock->pState.vi15 != pState->vi15))  continue;
+				if (doConstProp && (ref.pBlock->pState.vi15v != pState->vi15v)) continue;
+				return ref.pBlock;
 			}
 		}
-		return NULL;
+		return nullptr;
 	}
 	void printInfo(int pc, bool printQuick)
 	{
@@ -231,6 +251,8 @@ struct microVU
 	u8* exitFunct;    // Function Ptr to the recompiler dispatcher (exit)
 	u8* startFunctXG; // Function Ptr to the recompiler dispatcher (xgkick resume)
 	u8* exitFunctXG;  // Function Ptr to the recompiler dispatcher (xgkick exit)
+	u8* waitMTVU;     // Ptr to function to save registers/sync VU1 thread
+	u8* copyPLState;  // Ptr to function to copy pipeline state into microVU
 	u8* resumePtrXG;  // Ptr to recompiled code position to resume xgkick
 	u32 code;         // Contains the current Instruction
 	u32 divFlag;      // 1 instance of I/D flags
@@ -261,6 +283,7 @@ alignas(16) microVU microVU1;
 
 // Debug Helper
 int mVUdebugNow = 0;
+extern void DumpVUState(u32 n, u32 pc);
 
 // Main Functions
 extern void mVUclear(mV, u32, u32);

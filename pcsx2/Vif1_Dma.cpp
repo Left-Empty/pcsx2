@@ -229,6 +229,10 @@ __fi void vif1SetupTransfer()
 
 __fi void vif1VUFinish()
 {
+	// Sync up VU1 so we don't errantly wait.
+	while (!THREAD_VU1 && static_cast<int>(cpuRegs.cycle - VU1.cycle) > 0 && (VU0.VI[REG_VPU_STAT].UL & 0x100))
+		CpuVU1->ExecuteBlock();
+
 	if (VU0.VI[REG_VPU_STAT].UL & 0x500)
 	{
 		vu1Thread.Get_MTVUChanges();
@@ -237,6 +241,7 @@ __fi void vif1VUFinish()
 			CPU_INT(VIF_VU1_FINISH, cpuGetCycles(VU_MTVU_BUSY));
 		else
 			CPU_INT(VIF_VU1_FINISH, 128);
+		CPU_SET_DMASTALL(VIF_VU1_FINISH, true);
 		return;
 	}
 
@@ -249,6 +254,7 @@ __fi void vif1VUFinish()
 			CPU_INT(VIF_VU1_FINISH, cpuGetCycles(VU_MTVU_BUSY));
 		else
 			CPU_INT(VIF_VU1_FINISH, VU1.cycle - _cycles);
+		CPU_SET_DMASTALL(VIF_VU1_FINISH, true);
 		return;
 	}
 
@@ -322,11 +328,15 @@ __fi void vif1Interrupt()
 		//DevCon.Warning("Waiting on VU1");
 		//CPU_INT(DMAC_VIF1, 16);
 		CPU_INT(VIF_VU1_FINISH, std::max(16, cpuGetCycles(VU_MTVU_BUSY)));
+		CPU_SET_DMASTALL(DMAC_VIF1, true);
 		return;
 	}
 
 	if (vif1Regs.stat.VGW)
+	{
+		CPU_SET_DMASTALL(DMAC_VIF1, true);
 		return;
+	}
 
 	if (!vif1ch.chcr.STR)
 		Console.WriteLn("Vif1 running when CHCR == %x", vif1ch.chcr._u32);
@@ -357,6 +367,7 @@ __fi void vif1Interrupt()
 			{
 				vif1Regs.stat.VPS = VPS_DECODING; //If there's more data you need to say it's decoding the next VIF CMD (Onimusha - Blade Warriors)
 				VIF_LOG("VIF1 Stalled");
+				CPU_SET_DMASTALL(DMAC_VIF1, true);
 				return;
 			}
 		}
@@ -429,6 +440,7 @@ __fi void vif1Interrupt()
 	{
 		DevCon.WriteLn("VIF1 looping on stall at end\n");
 		CPU_INT(DMAC_VIF1, 0);
+		CPU_SET_DMASTALL(DMAC_VIF1, true);
 		return; //Dont want to end if vif is stalled.
 	}
 #ifdef PCSX2_DEVBUILD
@@ -455,6 +467,7 @@ __fi void vif1Interrupt()
 	g_vif1Cycles = 0;
 	VIF_LOG("VIF1 DMA End");
 	hwDmacIrq(DMAC_VIF1);
+	CPU_SET_DMASTALL(DMAC_VIF1, false);
 }
 
 void dmaVIF1()
@@ -466,6 +479,7 @@ void dmaVIF1()
 
 	g_vif1Cycles = 0;
 	vif1.inprogress = 0;
+	CPU_SET_DMASTALL(DMAC_VIF1, false);
 
 	if (vif1ch.qwc > 0) // Normal Mode
 	{

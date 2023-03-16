@@ -19,16 +19,15 @@
 
 #include "common/Exceptions.h"
 #include "common/SafeArray.h"
-#include "common/Threading.h"		// to use threading stuff, include the Threading namespace in your file.
-
-#include "vtlb.h"
+#include "common/Threading.h"
 
 #include "Config.h"
+#include "VirtualMemory.h"
+#include "vtlb.h"
 
 typedef SafeArray<u8> VmStateBuffer;
 
 class BaseVUmicroCPU;
-class RecompiledCodeReserve;
 
 // This is a table of default virtual map addresses for ps2vm components.  These locations
 // are provided and used to assist in debugging and possibly hacking; as it makes it possible
@@ -43,12 +42,12 @@ class RecompiledCodeReserve;
 
 namespace HostMemoryMap
 {
-	static const u32 Size = 0x28000000;
+	//////////////////////////////////////////////////////////////////////////
+	// Main
+	//////////////////////////////////////////////////////////////////////////
+	static const u32 MainSize = 0x14000000;
 
-	// The actual addresses may not be equivalent to Base + Offset in the event that allocation at Base failed
-	// Each of these offsets has a debugger-accessible equivalent variable without the Offset suffix that will hold the actual address (not here because we don't want code using it)
-
-	// PS2 main memory, SPR, and ROMs
+	// PS2 main memory, SPR, and ROMs (approximately 40.5MB, but we round up to 64MB for simplicity).
 	static const u32 EEmemOffset   = 0x00000000;
 
 	// IOP main memory and ROMs
@@ -57,67 +56,73 @@ namespace HostMemoryMap
 	// VU0 and VU1 memory.
 	static const u32 VUmemOffset   = 0x08000000;
 
-	// EE recompiler code cache area (64mb)
-	static const u32 EErecOffset   = 0x10000000;
-
-	// IOP recompiler code cache area (16 or 32mb)
-	static const u32 IOPrecOffset  = 0x14000000;
-
-	// newVif0 recompiler code cache area (16mb)
-	static const u32 VIF0recOffset = 0x16000000;
-
-	// newVif1 recompiler code cache area (32mb)
-	static const u32 VIF1recOffset = 0x18000000;
-
-	// microVU1 recompiler code cache area (32 or 64mb)
-	static const u32 mVU0recOffset = 0x1C000000;
-
-	// microVU0 recompiler code cache area (64mb)
-	static const u32 mVU1recOffset = 0x20000000;
-
 	// Bump allocator for any other small allocations
 	// size: Difference between it and HostMemoryMap::Size, so nothing should allocate higher than it!
-	static const u32 bumpAllocatorOffset = 0x24000000;
+	static const u32 bumpAllocatorOffset = 0x10000000;
+
+	//////////////////////////////////////////////////////////////////////////
+	// Code
+	//////////////////////////////////////////////////////////////////////////
+	static const u32 CodeSize = 0x13100000; // 305 mb
+
+	// EE recompiler code cache area (64mb)
+	static const u32 EErecOffset   = 0x00000000;
+
+	// IOP recompiler code cache area (32mb)
+	static const u32 IOPrecOffset  = 0x04000000;
+
+	// newVif0 recompiler code cache area (8mb)
+	static const u32 VIF0recOffset = 0x06000000;
+
+	// newVif1 recompiler code cache area (8mb)
+	static const u32 VIF1recOffset = 0x06800000;
+
+	// microVU1 recompiler code cache area (64mb)
+	static const u32 mVU0recOffset = 0x07000000;
+
+	// microVU0 recompiler code cache area (64mb)
+	static const u32 mVU1recOffset = 0x0B000000;
+
+	// SSE-optimized VIF unpack functions (1mb)
+	static const u32 VIFUnpackRecOffset = 0x0F000000;
+
+	// Software Renderer JIT buffer (64mb)
+	static const u32 SWrecOffset = 0x0F100000;
+	static const u32 SWrecSize = 0x04000000;
 }
 
 // --------------------------------------------------------------------------------------
 //  SysMainMemory
 // --------------------------------------------------------------------------------------
 // This class provides the main memory for the virtual machines.
-class SysMainMemory
+class SysMainMemory final
 {
 protected:
 	const VirtualMemoryManagerPtr m_mainMemory;
-	VirtualMemoryBumpAllocator    m_bumpAllocator;
-	eeMemoryReserve               m_ee;
-	iopMemoryReserve              m_iop;
-	vuMemoryReserve               m_vu;
+	const VirtualMemoryManagerPtr m_codeMemory;
+
+	VirtualMemoryBumpAllocator m_bumpAllocator;
+
+	eeMemoryReserve m_ee;
+	iopMemoryReserve m_iop;
+	vuMemoryReserve m_vu;
 
 public:
 	SysMainMemory();
-	virtual ~SysMainMemory();
+	~SysMainMemory();
 
-	const VirtualMemoryManagerPtr& MainMemory()    { return m_mainMemory; }
-	VirtualMemoryBumpAllocator&    BumpAllocator() { return m_bumpAllocator; }
+	const VirtualMemoryManagerPtr& MainMemory() { return m_mainMemory; }
+	const VirtualMemoryManagerPtr& CodeMemory() { return m_codeMemory; }
 
-	virtual void ReserveAll();
-	virtual void CommitAll();
-	virtual void ResetAll();
-	virtual void DecommitAll();
-	virtual void ReleaseAll();
-};
+	VirtualMemoryBumpAllocator& BumpAllocator() { return m_bumpAllocator; }
 
-// --------------------------------------------------------------------------------------
-//  SysAllocVM
-// --------------------------------------------------------------------------------------
-class SysAllocVM
-{
-public:
-	SysAllocVM();
-	virtual ~SysAllocVM();
+	const eeMemoryReserve& EEMemory() const { return m_ee; }
+	const iopMemoryReserve& IOPMemory() const { return m_iop; }
+	const vuMemoryReserve& VUMemory() const { return m_vu; }
 
-protected:
-	void CleanupMess() noexcept;
+	bool Allocate();
+	void Reset();
+	void Release();
 };
 
 // --------------------------------------------------------------------------------------
@@ -125,33 +130,11 @@ protected:
 // --------------------------------------------------------------------------------------
 class SysCpuProviderPack
 {
-protected:
-	ScopedExcept m_RecExceptionEE;
-	ScopedExcept m_RecExceptionIOP;
-
 public:
-	std::unique_ptr<CpuInitializerSet> CpuProviders;
-
 	SysCpuProviderPack();
-	virtual ~SysCpuProviderPack();
+	~SysCpuProviderPack();
 
 	void ApplyConfig() const;
-
-	bool HadSomeFailures( const Pcsx2Config::RecompilerOptions& recOpts ) const;
-
-	bool IsRecAvailable_EE() const		{ return !m_RecExceptionEE; }
-	bool IsRecAvailable_IOP() const		{ return !m_RecExceptionIOP; }
-
-	BaseException* GetException_EE() const	{ return m_RecExceptionEE.get(); }
-	BaseException* GetException_IOP() const	{ return m_RecExceptionIOP.get(); }
-
-	bool IsRecAvailable_MicroVU0() const;
-	bool IsRecAvailable_MicroVU1() const;
-	BaseException* GetException_MicroVU0() const;
-	BaseException* GetException_MicroVU1() const;
-
-protected:
-	void CleanupMess() noexcept;
 };
 
 // GetCpuProviders - this function is not implemented by PCSX2 core -- it must be
@@ -161,46 +144,10 @@ extern SysCpuProviderPack& GetCpuProviders();
 extern void SysLogMachineCaps();		// Detects cpu type and fills cpuInfo structs.
 extern void SysClearExecutionCache();	// clears recompiled execution caches!
 
-extern u8 *SysMmapEx(uptr base, u32 size, uptr bounds, const char *caller="Unnamed");
-
 extern std::string SysGetBiosDiscID();
 extern std::string SysGetDiscID();
 
 extern SysMainMemory& GetVmMemory();
 
-// special macro which disables inlining on functions that require their own function stackframe.
-// This is due to how Win32 handles structured exception handling.  Linux uses signals instead
-// of SEH, and so these functions can be inlined.
-#ifdef _WIN32
-#	define __unique_stackframe __noinline
-#else
-#	define __unique_stackframe
-#endif
-
-
-//////////////////////////////////////////////////////////////////////////////////////////
-// Different types of message boxes that the emulator can employ from the friendly confines
-// of it's blissful unawareness of whatever GUI it runs under. :)  All message boxes exhibit
-// blocking behavior -- they prompt the user for action and only return after the user has
-// responded to the prompt.
-//
-
-#ifndef PCSX2_CORE
-#include <wx/string.h>
-
-namespace Msgbox
-{
-	extern bool	Alert( const wxString& text, const wxString& caption="PCSX2 Message", int icon=wxICON_EXCLAMATION );
-	extern bool	OkCancel( const wxString& text, const wxString& caption="PCSX2 Message", int icon=0 );
-	extern bool	YesNo( const wxString& text, const wxString& caption="PCSX2 Message", int icon=wxICON_QUESTION );
-
-	extern int	Assertion( const wxString& text, const wxString& stacktrace );
-}
-#endif
-
-#ifdef _WIN32
-extern void CheckIsUserOnHighPerfPowerPlan();
-#endif
-
-extern void SetCPUState(SSE_MXCSR sseMXCSR, SSE_MXCSR sseVUMXCSR);
-extern SSE_MXCSR g_sseVUMXCSR, g_sseMXCSR;
+extern void SetCPUState(SSE_MXCSR sseMXCSR, SSE_MXCSR sseVU0MXCSR, SSE_MXCSR sseVU1MXCSR);
+extern SSE_MXCSR g_sseVU0MXCSR, g_sseVU1MXCSR, g_sseMXCSR;

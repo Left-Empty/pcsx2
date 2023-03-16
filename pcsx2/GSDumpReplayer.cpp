@@ -46,20 +46,19 @@ static void GSDumpReplayerCpuShutdown();
 static void GSDumpReplayerCpuReset();
 static void GSDumpReplayerCpuStep();
 static void GSDumpReplayerCpuExecute();
-static void GSDumpReplayerCpuCheckExecutionState();
-static void GSDumpReplayerCpuThrowException(const BaseException& ex);
-static void GSDumpReplayerCpuThrowCpuException(const BaseR5900Exception& ex);
+static void GSDumpReplayerExitExecution();
+static void GSDumpReplayerCancelInstruction();
 static void GSDumpReplayerCpuClear(u32 addr, u32 size);
-static uint GSDumpReplayerCpuGetCacheReserve();
-static void GSDumpReplayerCpuSetCacheReserve(uint reserveInMegs);
 
 static std::unique_ptr<GSDumpFile> s_dump_file;
 static u32 s_current_packet = 0;
 static u32 s_dump_frame_number = 0;
+static s32 s_dump_loop_count = 0;
 static bool s_dump_running = false;
 static bool s_needs_state_loaded = false;
 static u64 s_frame_ticks = 0;
 static u64 s_next_frame_time = 0;
+static bool s_is_dump_runner = false;
 
 R5900cpu GSDumpReplayerCpu = {
 	GSDumpReplayerCpuReserve,
@@ -67,12 +66,9 @@ R5900cpu GSDumpReplayerCpu = {
 	GSDumpReplayerCpuReset,
 	GSDumpReplayerCpuStep,
 	GSDumpReplayerCpuExecute,
-	GSDumpReplayerCpuCheckExecutionState,
-	GSDumpReplayerCpuThrowException,
-	GSDumpReplayerCpuThrowCpuException,
-	GSDumpReplayerCpuClear,
-	GSDumpReplayerCpuGetCacheReserve,
-	GSDumpReplayerCpuSetCacheReserve};
+	GSDumpReplayerExitExecution,
+	GSDumpReplayerCancelInstruction,
+	GSDumpReplayerCpuClear};
 
 static InterpVU0 gsDumpVU0;
 static InterpVU1 gsDumpVU1;
@@ -82,10 +78,30 @@ bool GSDumpReplayer::IsReplayingDump()
 	return static_cast<bool>(s_dump_file);
 }
 
+bool GSDumpReplayer::IsRunner()
+{
+	return s_is_dump_runner;
+}
+
+void GSDumpReplayer::SetIsDumpRunner(bool is_runner)
+{
+	s_is_dump_runner = is_runner;
+}
+
+void GSDumpReplayer::SetLoopCount(s32 loop_count)
+{
+	s_dump_loop_count = loop_count - 1;
+}
+
+int GSDumpReplayer::GetLoopCount()
+{
+	return s_dump_loop_count;
+}
+
 bool GSDumpReplayer::Initialize(const char* filename)
 {
 	Common::Timer timer;
-	Console.WriteLn("(GSDumpReplayer) Reading file...");
+	Console.WriteLn("(GSDumpReplayer) Reading file '%s'...", filename);
 
 	s_dump_file = GSDumpFile::OpenGSDump(filename);
 	if (!s_dump_file || !s_dump_file->ReadFile())
@@ -103,12 +119,29 @@ bool GSDumpReplayer::Initialize(const char* filename)
 	CpuVU0 = &gsDumpVU0;
 	CpuVU1 = &gsDumpVU1;
 
+	// loop infinitely by default
+	s_dump_loop_count = -1;
+
 	return true;
 }
 
-void GSDumpReplayer::Reset()
+bool GSDumpReplayer::ChangeDump(const char* filename)
 {
+	Console.WriteLn("(GSDumpReplayer) Switching to '%s'...", filename);
+
+	std::unique_ptr<GSDumpFile> new_dump(GSDumpFile::OpenGSDump(filename));
+	if (!new_dump || !new_dump->ReadFile())
+	{
+		Host::ReportFormattedErrorAsync("GSDumpReplayer", "Failed to open or read '%s'.", filename);
+		return false;
+	}
+
+	s_dump_file = std::move(new_dump);
+	s_current_packet = 0;
+
+	// Don't forget to reset the GS!
 	GSDumpReplayerCpuReset();
+	return true;
 }
 
 void GSDumpReplayer::Shutdown()
@@ -148,6 +181,11 @@ u32 GSDumpReplayer::GetDumpCRC()
 	return s_dump_file->GetCRC();
 }
 
+u32 GSDumpReplayer::GetFrameNumber()
+{
+	return s_dump_frame_number;
+}
+
 void GSDumpReplayerCpuReserve()
 {
 }
@@ -168,6 +206,9 @@ static void GSDumpReplayerLoadInitialState()
 	// reset GS registers to initial dump values
 	std::memcpy(PS2MEM_GS, s_dump_file->GetRegsData().data(),
 		std::min(Ps2MemSize::GSregs, static_cast<u32>(s_dump_file->GetRegsData().size())));
+
+	// update serial to load hw fixes
+	VMManager::Internal::GameStartingOnCPUThread();
 
 	// load GS state
 	freezeData fd = {static_cast<int>(s_dump_file->GetStateData().size()),
@@ -230,7 +271,16 @@ void GSDumpReplayerCpuStep()
 	const GSDumpFile::GSData& packet = s_dump_file->GetPackets()[s_current_packet];
 	s_current_packet = (s_current_packet + 1) % static_cast<u32>(s_dump_file->GetPackets().size());
 	if (s_current_packet == 0)
+	{
 		s_dump_frame_number = 0;
+		if (s_dump_loop_count > 0)
+			s_dump_loop_count--;
+		else if (s_dump_loop_count == 0)
+		{
+			Host::RequestVMShutdown(false, false, false);
+			s_dump_running = false;
+		}
+	}
 
 	switch (packet.id)
 	{
@@ -265,11 +315,12 @@ void GSDumpReplayerCpuStep()
 		case GSDumpTypes::GSType::VSync:
 		{
 			s_dump_frame_number++;
-			GSDumpReplayerCpuCheckExecutionState();
 			GSDumpReplayerUpdateFrameLimit();
 			GSDumpReplayerFrameLimit();
 			GetMTGS().PostVsyncStart(false);
 			VMManager::Internal::VSyncOnCPUThread();
+			if (VMManager::Internal::IsExecutionInterrupted())
+				GSDumpReplayerExitExecution();
 		}
 		break;
 
@@ -302,30 +353,16 @@ void GSDumpReplayerCpuExecute()
 	}
 }
 
-void GSDumpReplayerCpuCheckExecutionState()
+void GSDumpReplayerExitExecution()
 {
-	if (VMManager::Internal::IsExecutionInterrupted())
-		s_dump_running = false;
+	s_dump_running = false;
 }
 
-void GSDumpReplayerCpuThrowException(const BaseException& ex)
-{
-}
-
-void GSDumpReplayerCpuThrowCpuException(const BaseR5900Exception& ex)
+void GSDumpReplayerCancelInstruction()
 {
 }
 
 void GSDumpReplayerCpuClear(u32 addr, u32 size)
-{
-}
-
-uint GSDumpReplayerCpuGetCacheReserve()
-{
-	return 0;
-}
-
-void GSDumpReplayerCpuSetCacheReserve(uint reserveInMegs)
 {
 }
 

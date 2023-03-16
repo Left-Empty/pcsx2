@@ -30,6 +30,8 @@ namespace GSTextureReplacements
 
 		struct MipData
 		{
+			u32 width;
+			u32 height;
 			u32 pitch;
 			std::vector<u8> data;
 		};
@@ -47,10 +49,11 @@ namespace GSTextureReplacements
 	bool HasAnyReplacementTextures();
 	bool HasReplacementTextureWithOtherPalette(const GSTextureCache::HashCacheKey& hash);
 	GSTexture* LookupReplacementTexture(const GSTextureCache::HashCacheKey& hash, bool mipmap, bool* pending);
-	GSTexture* CreateReplacementTexture(const ReplacementTexture& rtex, const GSVector2& scale, bool mipmap);
+	GSTexture* CreateReplacementTexture(const ReplacementTexture& rtex, bool mipmap);
 	void ProcessAsyncLoadedTextures();
 
-	void DumpTexture(const GSTextureCache::HashCacheKey& hash, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSLocalMemory& mem, u32 level);
+	void DumpTexture(const GSTextureCache::HashCacheKey& hash, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
+		GSTextureCache::SourceRegion region, GSLocalMemory& mem, u32 level);
 	void ClearDumpedTextureList();
 
 	/// Loader will take a filename and interpret the format (e.g. DDS, PNG, etc).

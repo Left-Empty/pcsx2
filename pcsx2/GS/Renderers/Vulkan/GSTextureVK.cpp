@@ -126,6 +126,24 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Create(Type type, u32 width, u32 heigh
 			return std::make_unique<GSTextureVK>(type, format, std::move(texture));
 		}
 
+		case Type::RWTexture:
+		{
+			pxAssert(levels == 1);
+
+			Vulkan::Texture texture;
+			if (!texture.Create(width, height, levels, 1, vk_format, VK_SAMPLE_COUNT_1_BIT,
+					VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+						VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+			{
+				return {};
+			}
+
+			Vulkan::Util::SetObjectName(
+				g_vulkan_context->GetDevice(), texture.GetImage(), "%ux%u RW texture", width, height);
+			return std::make_unique<GSTextureVK>(type, format, std::move(texture));
+		}
+
 		default:
 			return {};
 	}
@@ -244,6 +262,7 @@ bool GSTextureVK::Update(const GSVector4i& r, const void* data, int pitch, int l
 	}
 
 	m_texture.UpdateFromBuffer(cmdbuf, layer, 0, r.x, r.y, width, height,
+		Common::AlignUpPow2(height, GetCompressedBlockSize()),
 		CalcUploadRowLengthFromPitch(upload_pitch), buffer, buffer_offset);
 	m_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -285,7 +304,8 @@ bool GSTextureVK::Map(GSMap& m, const GSVector4i* r, int layer)
 
 void GSTextureVK::Unmap()
 {
-	pxAssert(m_map_level < m_texture.GetLevels());
+	// this can't handle blocks/compressed formats at the moment.
+	pxAssert(m_map_level < m_texture.GetLevels() && !IsCompressedFormat());
 	g_perfmon.Put(GSPerfMon::TextureUploads, 1);
 
 	// TODO: non-tightly-packed formats
@@ -316,6 +336,7 @@ void GSTextureVK::Unmap()
 	}
 
 	m_texture.UpdateFromBuffer(cmdbuf, m_map_level, 0, m_map_area.x, m_map_area.y, width, height,
+		Common::AlignUpPow2(height, GetCompressedBlockSize()),
 		CalcUploadRowLengthFromPitch(pitch), buffer.GetBuffer(), buffer_offset);
 	m_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -401,7 +422,7 @@ void GSTextureVK::CommitClear(VkCommandBuffer cmdbuf)
 		vkCmdClearColorImage(cmdbuf, m_texture.GetImage(), m_texture.GetLayout(), &cv, 1, &srr);
 	}
 
-	SetState(GSTexture::State::Dirty);	
+	SetState(GSTexture::State::Dirty);
 }
 
 VkFramebuffer GSTextureVK::GetFramebuffer(bool feedback_loop) { return GetLinkedFramebuffer(nullptr, feedback_loop); }
@@ -441,4 +462,139 @@ VkFramebuffer GSTextureVK::GetLinkedFramebuffer(GSTextureVK* depth_texture, bool
 	if (depth_texture)
 		depth_texture->m_framebuffers.emplace_back(this, fb, feedback_loop);
 	return fb;
+}
+
+GSDownloadTextureVK::GSDownloadTextureVK(u32 width, u32 height, GSTexture::Format format)
+	: GSDownloadTexture(width, height, format)
+{
+}
+
+GSDownloadTextureVK::~GSDownloadTextureVK()
+{
+	// Buffer was created mapped, no need to manually unmap.
+	if (m_buffer != VK_NULL_HANDLE)
+		g_vulkan_context->DeferBufferDestruction(m_buffer, m_allocation);
+}
+
+std::unique_ptr<GSDownloadTextureVK> GSDownloadTextureVK::Create(u32 width, u32 height, GSTexture::Format format)
+{
+	const u32 buffer_size = GetBufferSize(width, height, format, g_vulkan_context->GetBufferCopyRowPitchAlignment());
+
+	const VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0u, buffer_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_SHARING_MODE_EXCLUSIVE, 0u, nullptr};
+
+	VmaAllocationCreateInfo aci = {};
+	aci.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+	aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+	aci.preferredFlags = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+
+	VmaAllocationInfo ai = {};
+	VmaAllocation allocation;
+	VkBuffer buffer;
+	VkResult res = vmaCreateBuffer(g_vulkan_context->GetAllocator(), &bci, &aci, &buffer, &allocation, &ai);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vmaCreateBuffer() failed: ");
+		return {};
+	}
+
+	std::unique_ptr<GSDownloadTextureVK> tex = std::unique_ptr<GSDownloadTextureVK>(new GSDownloadTextureVK(width, height, format));
+	tex->m_allocation = allocation;
+	tex->m_buffer = buffer;
+	tex->m_buffer_size = buffer_size;
+	tex->m_map_pointer = static_cast<const u8*>(ai.pMappedData);
+	return tex;
+}
+
+void GSDownloadTextureVK::CopyFromTexture(
+	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
+{
+	GSTextureVK* const vkTex = static_cast<GSTextureVK*>(stex);
+
+	pxAssert(vkTex->GetFormat() == m_format);
+	pxAssert(drc.width() == src.width() && drc.height() == src.height());
+	pxAssert(src.z <= vkTex->GetWidth() && src.w <= vkTex->GetHeight());
+	pxAssert(static_cast<u32>(drc.z) <= m_width && static_cast<u32>(drc.w) <= m_height);
+	pxAssert(src_level < static_cast<u32>(vkTex->GetMipmapLevels()));
+	pxAssert((drc.left == 0 && drc.top == 0) || !use_transfer_pitch);
+
+	u32 copy_offset, copy_size, copy_rows;
+	m_current_pitch =
+		GetTransferPitch(use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width, g_vulkan_context->GetBufferCopyRowPitchAlignment());
+	GetTransferSize(drc, &copy_offset, &copy_size, &copy_rows);
+
+	g_perfmon.Put(GSPerfMon::Readbacks, 1);
+	GSDeviceVK::GetInstance()->EndRenderPass();
+	vkTex->CommitClear();
+
+	const VkCommandBuffer cmdbuf = g_vulkan_context->GetCurrentCommandBuffer();
+	GL_INS("GSDownloadTextureVK::CopyFromTexture: {%d,%d} %ux%u", src.left, src.top, src.width(), src.height());
+
+	VkImageLayout old_layout = vkTex->GetTexture().GetLayout();
+	if (old_layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+	{
+		vkTex->GetTexture().TransitionSubresourcesToLayout(cmdbuf, src_level, 1, 0, 1, old_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	}
+
+	VkBufferImageCopy image_copy = {};
+	const VkImageAspectFlags aspect =
+		Vulkan::Util::IsDepthFormat(static_cast<VkFormat>(vkTex->GetFormat())) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+	image_copy.bufferOffset = copy_offset;
+	image_copy.bufferRowLength = GSTexture::CalcUploadRowLengthFromPitch(m_format, m_current_pitch);
+	image_copy.bufferImageHeight = 0;
+	image_copy.imageSubresource = {aspect, src_level, 0u, 1u};
+	image_copy.imageOffset = {src.left, src.top, 0};
+	image_copy.imageExtent = {static_cast<u32>(src.width()), static_cast<u32>(src.height()), 1u};
+
+	// do the copy
+	vkCmdCopyImageToBuffer(cmdbuf, vkTex->GetTexture().GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_buffer, 1, &image_copy);
+
+	// flush gpu cache
+	Vulkan::Util::BufferMemoryBarrier(cmdbuf, m_buffer, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT, 0, copy_size,
+		VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT);
+
+	if (old_layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+	{
+		vkTex->GetTexture().TransitionSubresourcesToLayout(cmdbuf, src_level, 1, 0, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, old_layout);
+	}
+
+	m_copy_fence_counter = g_vulkan_context->GetCurrentFenceCounter();
+	m_needs_cache_invalidate = true;
+	m_needs_flush = true;
+}
+
+bool GSDownloadTextureVK::Map(const GSVector4i& read_rc)
+{
+	// Always mapped, but we might need to invalidate the cache.
+	if (m_needs_cache_invalidate)
+	{
+		u32 copy_offset, copy_size, copy_rows;
+		GetTransferSize(read_rc, &copy_offset, &copy_size, &copy_rows);
+		vmaInvalidateAllocation(g_vulkan_context->GetAllocator(), m_allocation, copy_offset, copy_size);
+		m_needs_cache_invalidate = false;
+	}
+
+	return true;
+}
+
+void GSDownloadTextureVK::Unmap()
+{
+	// Always mapped.
+}
+
+void GSDownloadTextureVK::Flush()
+{
+	if (!m_needs_flush)
+		return;
+
+	m_needs_flush = false;
+
+	if (g_vulkan_context->GetCompletedFenceCounter() >= m_copy_fence_counter)
+		return;
+
+	// Need to execute command buffer.
+	if (g_vulkan_context->GetCurrentFenceCounter() == m_copy_fence_counter)
+		GSDeviceVK::GetInstance()->ExecuteCommandBufferForReadback();
+	else
+		g_vulkan_context->WaitForFenceCounter(m_copy_fence_counter);
 }

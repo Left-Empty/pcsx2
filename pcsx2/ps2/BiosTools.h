@@ -25,25 +25,9 @@ const u32 ThreadListInstructions[3] =
 
 struct BiosDebugInformation
 {
-	u32 threadListAddr;
-};
-
-// The following two arrays are used for Qt
-[[maybe_unused]] static const char* BiosZoneStrings[] {
-	"T10K",
-	"Test",
-	"Japan",
-	"USA",
-	"Europe",
-	"HK",
-	"Free",
-	"China",
-	nullptr
-};
-
-[[maybe_unused]] static const char* BiosZoneBytes[]
-{
-	"T", "X", "J", "A", "E", "H", "P", "C", nullptr
+	u32 eeThreadListAddr;
+	u32 iopThreadListAddr;
+	u32 iopModListAddr;
 };
 
 extern BiosDebugInformation CurrentBiosInformation;
@@ -54,8 +38,9 @@ extern bool AllowParams1;
 extern bool AllowParams2;
 extern u32 BiosChecksum;
 extern std::string BiosDescription;
-extern std::string BiosZone;
+extern std::string BiosSerial;
 extern std::string BiosPath;
 extern bool LoadBIOS();
 extern bool IsBIOS(const char* filename, u32& version, std::string& description, u32& region, std::string& zone);
 extern bool IsBIOSAvailable(const std::string& full_path);
+

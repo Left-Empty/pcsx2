@@ -17,8 +17,8 @@
 
 #include "GSTables.h"
 #include "GSVector.h"
-#include "GSBlock.h"
 #include "GSClut.h"
+#include "MultiISA.h"
 #include <array>
 #include <unordered_map>
 
@@ -178,6 +178,12 @@ public:
 	u32 bn(int x, int y) const
 	{
 		return BNHelper(*this, x, y).value();
+	}
+
+	/// Get the block number of the given pixel, without wrapping to MAX_BLOCKS
+	u32 bnNoWrap(int x, int y) const
+	{
+		return BNHelper(*this, x, y).valueNoWrap();
 	}
 
 	/// Get a helper class for efficiently calculating multiple block numbers
@@ -434,8 +440,14 @@ inline u32 GSSwizzleInfo::pa(int x, int y, u32 bp, u32 bw) const
 	return GSOffset(*this, bp, bw, 0).pa(x, y);
 }
 
-class GSLocalMemory : public GSAlignedClass<32>
+class GSLocalMemory;
+MULTI_ISA_DEF(class GSLocalMemoryFunctions;)
+MULTI_ISA_DEF(void GSLocalMemoryPopulateFunctions(GSLocalMemory& mem);)
+
+class GSLocalMemory final : public GSAlignedClass<32>
 {
+	MULTI_ISA_FRIEND(GSLocalMemoryFunctions)
+
 public:
 	typedef u32 (*pixelAddress)(int x, int y, u32 bp, u32 bw);
 	typedef void (GSLocalMemory::*writePixel)(int x, int y, u32 c, u32 bp, u32 bw);
@@ -444,12 +456,13 @@ public:
 	typedef u32 (GSLocalMemory::*readTexel)(int x, int y, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA) const;
 	typedef void (GSLocalMemory::*writePixelAddr)(u32 addr, u32 c);
 	typedef void (GSLocalMemory::*writeFrameAddr)(u32 addr, u32 c);
+	typedef u32(GSLocalMemory::*PixelAddr)(int x, int y, u32 bp, u32 bw) const;
 	typedef u32 (GSLocalMemory::*readPixelAddr)(u32 addr) const;
 	typedef u32 (GSLocalMemory::*readTexelAddr)(u32 addr, const GIFRegTEXA& TEXA) const;
-	typedef void (GSLocalMemory::*writeImage)(int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
-	typedef void (GSLocalMemory::*readImage)(int& tx, int& ty, u8* dst, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG) const;
-	typedef void (GSLocalMemory::*readTexture)(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	typedef void (GSLocalMemory::*readTextureBlock)(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
+	typedef void (*writeImage)(GSLocalMemory& mem, int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
+	typedef void (*readImage)(const GSLocalMemory& mem, int& tx, int& ty, u8* dst, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
+	typedef void (*readTexture)(GSLocalMemory& mem, const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
+	typedef void (*readTextureBlock)(const GSLocalMemory& mem, u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
 
 	struct alignas(128) psm_t
 	{
@@ -472,15 +485,13 @@ public:
 	};
 
 	static psm_t m_psm[64];
+	static readImage m_readImageX;
 
-	static const int m_vmsize = 1024 * 1024 * 4;
+	static constexpr int m_vmsize = 1024 * 1024 * 4;
 
 	u8* m_vm8;
 
 	GSClut m_clut;
-
-protected:
-	bool m_use_fifo_alloc;
 
 public:
 	static constexpr GSSwizzleInfo swizzle32   {swizzleTables32};
@@ -518,7 +529,7 @@ protected:
 
 public:
 	GSLocalMemory();
-	virtual ~GSLocalMemory();
+	~GSLocalMemory();
 
 	__forceinline u16* vm16() const { return reinterpret_cast<u16*>(m_vm8); }
 	__forceinline u32* vm32() const { return reinterpret_cast<u32*>(m_vm8); }
@@ -976,10 +987,15 @@ public:
 		off.loopPixels(r, vm32(), (u32*)src, pitch, [&](u32* dst, u32* src) { *dst = *src; });
 	}
 
+	void WritePixel32(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r, u32 write_mask)
+	{
+		off.loopPixels(r, vm32(), (u32*)src, pitch, [&](u32* dst, u32* src) { *dst = (*dst & ~write_mask) | (*src & write_mask); });
+	}
+
 	void WritePixel24(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r)
 	{
 		off.loopPixels(r, vm32(), (u32*)src, pitch,
-		[&](u32* dst, u32* src)
+			[&](u32* dst, u32* src)
 		{
 			*dst = (*dst & 0xff000000) | (*src & 0x00ffffff);
 		});
@@ -1107,81 +1123,11 @@ public:
 		return ReadTexel16(PixelAddress16SZ(x, y, TEX0.TBP0, TEX0.TBW), TEXA);
 	}
 
-	//
+	__forceinline void ReadImageX(int& tx, int& ty, u8* dst, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG) const
+	{
+		m_readImageX(*this, tx, ty, dst, len, BITBLTBUF, TRXPOS, TRXREG);
+	}
 
-	template <int psm, int bsx, int bsy, int alignment>
-	void WriteImageColumn(int l, int r, int y, int h, const u8* src, int srcpitch, const GIFRegBITBLTBUF& BITBLTBUF);
-
-	template <int psm, int bsx, int bsy, int alignment>
-	void WriteImageBlock(int l, int r, int y, int h, const u8* src, int srcpitch, const GIFRegBITBLTBUF& BITBLTBUF);
-
-	template <int psm, int bsx, int bsy>
-	void WriteImageLeftRight(int l, int r, int y, int h, const u8* src, int srcpitch, const GIFRegBITBLTBUF& BITBLTBUF);
-
-	template <int psm, int bsx, int bsy, int trbpp>
-	void WriteImageTopBottom(int l, int r, int y, int h, const u8* src, int srcpitch, const GIFRegBITBLTBUF& BITBLTBUF);
-
-	template <int psm, int bsx, int bsy, int trbpp>
-	void WriteImage(int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
-
-	void WriteImage24(int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
-	void WriteImage8H(int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
-	void WriteImage4HL(int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
-	void WriteImage4HH(int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
-	void WriteImage24Z(int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
-	void WriteImageX(int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
-
-	// TODO: ReadImage32/24/...
-
-	void ReadImageX(int& tx, int& ty, u8* dst, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG) const;
-
-	// * => 32
-
-	void ReadTexture32(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTextureGPU24(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture24(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture16(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture8(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture4(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture8H(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture4HL(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture4HH(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-
-	void ReadTexture(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-
-	void ReadTextureBlock32(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock24(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock16(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock8(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock4(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock8H(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock4HL(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock4HH(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-
-#if _M_SSE == 0x501
-	void ReadTexture8HSW(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture8HHSW(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTextureBlock8HSW(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock8HHSW(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-#endif
-
-	// pal ? 8 : 32
-
-	void ReadTexture8P(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture4P(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture8HP(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture4HLP(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-	void ReadTexture4HHP(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
-
-	void ReadTextureBlock8P(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock4P(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock8HP(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock4HLP(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-	void ReadTextureBlock4HHP(u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA) const;
-
-	//
-
-	template <typename T>
 	void ReadTexture(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
 
 	//

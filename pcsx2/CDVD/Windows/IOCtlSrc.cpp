@@ -16,6 +16,7 @@
 #include "PrecompiledHeader.h"
 #include "CDVD/CDVDdiscReader.h"
 #include "CDVD/CDVD.h"
+#include "common/Console.h"
 
 #include <winioctl.h>
 #include <ntddcdvd.h>
@@ -29,6 +30,8 @@
 #include <cstddef>
 #include <cstdlib>
 #include <stdexcept>
+
+#include "fmt/format.h"
 
 IOCtlSrc::IOCtlSrc(std::string filename)
 	: m_filename(std::move(filename))
@@ -123,8 +126,8 @@ bool IOCtlSrc::ReadSectors2048(u32 sector, u32 count, u8* buffer) const
 
 	if (!SetFilePointerEx(m_device, offset, nullptr, FILE_BEGIN))
 	{
-		fprintf(stderr, " * CDVD SetFilePointerEx failed: sector %u: error %u\n",
-				sector, GetLastError());
+		Console.Error(fmt::format(" * CDVD SetFilePointerEx failed: sector {}: error {}",
+				sector, GetLastError()));
 		return false;
 	}
 
@@ -134,13 +137,13 @@ bool IOCtlSrc::ReadSectors2048(u32 sector, u32 count, u8* buffer) const
 	{
 		if (bytes_read == bytes_to_read)
 			return true;
-		fprintf(stderr, " * CDVD ReadFile: sectors %u-%u: %u bytes read, %u bytes expected\n",
-				sector, sector + count - 1, bytes_read, bytes_to_read);
+		Console.Error(fmt::format(" * CDVD ReadFile: sectors {}-{}: {} bytes read, {} bytes expected",
+				sector, sector + count - 1, bytes_read, bytes_to_read));
 	}
 	else
 	{
-		fprintf(stderr, " * CDVD ReadFile failed: sectors %u-%u: error %u\n",
-				sector, sector + count - 1, GetLastError());
+		Console.Error(fmt::format(" * CDVD ReadFile failed: sectors {}-{}: error {}",
+				sector, sector + count - 1, GetLastError()));
 	}
 
 	return false;
@@ -212,14 +215,14 @@ bool IOCtlSrc::ReadDVDInfo()
 	// least 18 bytes of the layer descriptor or else the ioctl will fail. The
 	// media specific information seems to be empty, so there's no point reading
 	// any more than that.
-	
+
 	// UPDATE 15 Jan 2021
 	// Okay so some drives seem to have descriptors BIGGER than 22 bytes!
 	// This causes the read to fail with INVALID_PARAMETER.
 	// So lets just give it 32 bytes to play with, it seems happy enough with that.
 	// Refraction
 	std::array<u8, 32> buffer;
-	DVD_READ_STRUCTURE dvdrs{{0}, DvdPhysicalDescriptor, 0, 0};
+	DVD_READ_STRUCTURE dvdrs{{}, DvdPhysicalDescriptor, 0, 0};
 
 	if (!DeviceIoControl(m_device, IOCTL_DVD_READ_STRUCTURE, &dvdrs, sizeof(dvdrs),
 						 buffer.data(), buffer.size(), &unused, nullptr))

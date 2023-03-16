@@ -14,9 +14,9 @@
  */
 
 #include "PrecompiledHeader.h"
-#include "GSDevice11.h"
-#include "GS/resource.h"
+#include "GS/Renderers/DX11/GSDevice11.h"
 #include "GS/GSTables.h"
+#include "common/StringUtil.h"
 
 bool GSDevice11::CreateTextureFX()
 {
@@ -42,24 +42,6 @@ bool GSDevice11::CreateTextureFX()
 	bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 
 	hr = m_dev->CreateBuffer(&bd, nullptr, m_ps_cb.put());
-
-	if (FAILED(hr))
-		return false;
-
-	D3D11_SAMPLER_DESC sd;
-
-	memset(&sd, 0, sizeof(sd));
-
-	sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-	sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-	sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-	sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-	sd.MinLOD = -FLT_MAX;
-	sd.MaxLOD = FLT_MAX;
-	sd.MaxAnisotropy = 1;
-	sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
-
-	hr = m_dev->CreateSamplerState(&sd, m_palette_ss.put());
 
 	if (FAILED(hr))
 		return false;
@@ -137,6 +119,7 @@ void GSDevice11::SetupGS(GSSelector sel)
 			sm.AddMacro("GS_IIP", sel.iip);
 			sm.AddMacro("GS_PRIM", static_cast<int>(sel.topology));
 			sm.AddMacro("GS_EXPAND", sel.expand);
+			sm.AddMacro("GS_FORWARD_PRIMID", sel.forward_primid);
 
 			gs = m_shader_cache.GetGeometryShader(m_dev.get(), m_tfx_source, sm.GetPtr(), "gs_main");
 
@@ -155,18 +138,21 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 	{
 		ShaderMacro sm(m_shader_cache.GetFeatureLevel());
 
-		sm.AddMacro("PS_SCALE_FACTOR", GSConfig.UpscaleMultiplier);
 		sm.AddMacro("PS_FST", sel.fst);
 		sm.AddMacro("PS_WMS", sel.wms);
 		sm.AddMacro("PS_WMT", sel.wmt);
+		sm.AddMacro("PS_ADJS", sel.adjs);
+		sm.AddMacro("PS_ADJT", sel.adjt);
 		sm.AddMacro("PS_AEM_FMT", sel.aem_fmt);
 		sm.AddMacro("PS_AEM", sel.aem);
 		sm.AddMacro("PS_TFX", sel.tfx);
 		sm.AddMacro("PS_TCC", sel.tcc);
+		sm.AddMacro("PS_DATE", sel.date);
 		sm.AddMacro("PS_ATST", sel.atst);
 		sm.AddMacro("PS_FOG", sel.fog);
 		sm.AddMacro("PS_IIP", sel.iip);
-		sm.AddMacro("PS_CLR_HW", sel.clr_hw);
+		sm.AddMacro("PS_BLEND_HW", sel.blend_hw);
+		sm.AddMacro("PS_A_MASKED", sel.a_masked);
 		sm.AddMacro("PS_FBA", sel.fba);
 		sm.AddMacro("PS_FBMASK", sel.fbmask);
 		sm.AddMacro("PS_LTF", sel.ltf);
@@ -174,13 +160,13 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 		sm.AddMacro("PS_POINT_SAMPLER", sel.point_sampler);
 		sm.AddMacro("PS_SHUFFLE", sel.shuffle);
 		sm.AddMacro("PS_READ_BA", sel.read_ba);
+		sm.AddMacro("PS_READ16_SRC", sel.real16src);
 		sm.AddMacro("PS_CHANNEL_FETCH", sel.channel);
 		sm.AddMacro("PS_TALES_OF_ABYSS_HLE", sel.tales_of_abyss_hle);
 		sm.AddMacro("PS_URBAN_CHAOS_HLE", sel.urban_chaos_hle);
 		sm.AddMacro("PS_DFMT", sel.dfmt);
 		sm.AddMacro("PS_DEPTH_FMT", sel.depth_fmt);
 		sm.AddMacro("PS_PAL_FMT", sel.pal_fmt);
-		sm.AddMacro("PS_INVALID_TEX0", sel.invalid_tex0);
 		sm.AddMacro("PS_HDR", sel.hdr);
 		sm.AddMacro("PS_COLCLIP", sel.colclip);
 		sm.AddMacro("PS_BLEND_A", sel.blend_a);
@@ -188,6 +174,7 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 		sm.AddMacro("PS_BLEND_C", sel.blend_c);
 		sm.AddMacro("PS_BLEND_D", sel.blend_d);
 		sm.AddMacro("PS_BLEND_MIX", sel.blend_mix);
+		sm.AddMacro("PS_ROUND_INV", sel.round_inv);
 		sm.AddMacro("PS_FIXED_ONE_A", sel.fixed_one_a);
 		sm.AddMacro("PS_PABE", sel.pabe);
 		sm.AddMacro("PS_DITHER", sel.dither);
@@ -210,7 +197,7 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 		m_ctx->UpdateSubresource(m_ps_cb.get(), 0, NULL, cb, 0, 0);
 	}
 
-	wil::com_ptr_nothrow<ID3D11SamplerState> ss0, ss1;
+	wil::com_ptr_nothrow<ID3D11SamplerState> ss0;
 
 	if (sel.tfx != 4)
 	{
@@ -230,7 +217,7 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 			D3D11_SAMPLER_DESC sd = {};
 
 			const int anisotropy = GSConfig.MaxAnisotropy;
-			if (anisotropy && ssel.aniso)
+			if (anisotropy > 1 && ssel.aniso)
 			{
 				sd.Filter = D3D11_FILTER_ANISOTROPIC;
 			}
@@ -257,7 +244,7 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 			sd.AddressV = ssel.tav ? D3D11_TEXTURE_ADDRESS_WRAP : D3D11_TEXTURE_ADDRESS_CLAMP;
 			sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
 			sd.MinLOD = 0.0f;
-			sd.MaxLOD = ssel.lodclamp ? 0.0f : FLT_MAX;
+			sd.MaxLOD = (ssel.lodclamp || !ssel.UseMipmapFiltering()) ? 0.25f : FLT_MAX;
 			sd.MaxAnisotropy = std::clamp(anisotropy, 1, 16);
 			sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
 
@@ -265,14 +252,9 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 
 			m_ps_ss[ssel.key] = ss0;
 		}
-
-		if (sel.pal_fmt)
-		{
-			ss1 = m_palette_ss;
-		}
 	}
 
-	PSSetSamplerState(ss0.get(), ss1.get());
+	PSSetSamplerState(ss0.get());
 
 	PSSetShader(i->second.get(), m_ps_cb.get());
 }
@@ -289,8 +271,8 @@ static constexpr std::array<D3D11_BLEND, 16> s_d3d11_blend_factors = { {
 	D3D11_BLEND_DEST_ALPHA, D3D11_BLEND_INV_DEST_ALPHA, D3D11_BLEND_SRC1_ALPHA, D3D11_BLEND_INV_SRC1_ALPHA,
 	D3D11_BLEND_BLEND_FACTOR, D3D11_BLEND_INV_BLEND_FACTOR, D3D11_BLEND_ONE, D3D11_BLEND_ZERO
 } };
-static constexpr std::array<D3D11_BLEND_OP, 3> s_d3d11_blend_ops = { {
-	D3D11_BLEND_OP_ADD, D3D11_BLEND_OP_SUBTRACT, D3D11_BLEND_OP_REV_SUBTRACT
+static constexpr std::array<D3D11_BLEND_OP, 4> s_d3d11_blend_ops = { {
+	D3D11_BLEND_OP_ADD, D3D11_BLEND_OP_SUBTRACT, D3D11_BLEND_OP_REV_SUBTRACT, D3D11_BLEND_OP_MIN
 } };
 // clang-format on
 

@@ -1,6 +1,6 @@
 /*  PCSX2 - PS2 Emulator for PCs
  *  Copyright (C) 2002-2010  PCSX2 Dev Team
- * 
+ *
  *  PCSX2 is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU Lesser General Public License as published by the Free Software Found-
  *  ation, either version 3 of the License, or (at your option) any later version.
@@ -54,12 +54,15 @@ void mVUsetupRange(microVU& mVU, s32 pc, bool isStartPC)
 		pxFailDev("microVU: PC out of VU memory");
 	}
 
+	// The PC handling will prewrap the PC so we need to set the end PC to the end of the micro memory, but only if it wraps, no more.
+	const s32 cur_pc = (!isStartPC && mVUrange.start > pc && pc == 0) ? mVU.microMemSize : pc;
+
 	if (isStartPC) // Check if startPC is already within a block we've recompiled
 	{
 		std::deque<microRange>::const_iterator it(ranges->begin());
 		for (; it != ranges->end(); ++it)
 		{
-			if ((pc >= it[0].start) && (pc <= it[0].end))
+			if ((cur_pc >= it[0].start) && (cur_pc <= it[0].end))
 			{
 				if (it[0].start != it[0].end)
 				{
@@ -71,53 +74,51 @@ void mVUsetupRange(microVU& mVU, s32 pc, bool isStartPC)
 			}
 		}
 	}
-	else if (mVUrange.end >= pc)
+	else if (mVUrange.end >= cur_pc)
 	{
 		// existing range covers more area than current PC so no need to process it
 		return;
 	}
-
-	mVUcheckIsSame(mVU);
+	
+	if (doWholeProgCompare)
+		mVUcheckIsSame(mVU);
 
 	if (isStartPC)
 	{
-		microRange mRange = {pc, -1};
+		microRange mRange = {cur_pc, -1};
 		ranges->push_front(mRange);
 		return;
 	}
-	if (mVUrange.start <= pc)
+
+	if (mVUrange.start <= cur_pc)
 	{
-		mVUrange.end = pc;
-		bool mergedRange = false;
-		s32 rStart = mVUrange.start;
-		s32 rEnd = mVUrange.end;
+		mVUrange.end = cur_pc;
+		s32& rStart = mVUrange.start;
+		s32& rEnd = mVUrange.end;
 		std::deque<microRange>::iterator it(ranges->begin());
-		for (++it; it != ranges->end(); ++it)
+		it++;
+		for (;it != ranges->end();)
 		{
-			if ((it[0].start >= rStart) && (it[0].start <= rEnd)) // Starts after this prog but starts before the end of current prog
+			if (((it->start >= rStart) && (it->start <= rEnd)) || ((it->end >= rStart) && (it->end <= rEnd))) // Starts after this prog but starts before the end of current prog
 			{
-				it[0].start = std::min(it[0].start, rStart); // Choose the earlier start
-				mergedRange = true;
+				rStart = std::min(it->start, rStart); // Choose the earlier start
+				rEnd = std::max(it->end, rEnd);
+				it = ranges->erase(it);
 			}
-			// Make sure we check both as the start on the other one may be later, we don't want to delete that
-			if ((it[0].end >= rStart) && (it[0].end <= rEnd)) // Ends after this prog starts but ends before this one ends
-			{
-				it[0].end = std::max(it[0].end, rEnd); // Extend the end of this prog to match this program
-				mergedRange = true;
-			}
-		}
-		if (mergedRange)
-		{
-			ranges->erase(ranges->begin());
+			else
+				it++;
 		}
 	}
 	else
 	{
 		mVUrange.end = mVU.microMemSize;
-		DevCon.WriteLn(Color_Green, "microVU%d: Prog Range Wrap [%04x] [%d]", mVU.index, mVUrange.start, mVUrange.end);
-		microRange mRange = {0, pc};
+		DevCon.WriteLn(Color_Green, "microVU%d: Prog Range Wrap [%04x] [%04x] PC %x", mVU.index, mVUrange.start, mVUrange.end, cur_pc);
+		microRange mRange = {0, cur_pc };
 		ranges->push_front(mRange);
 	}
+
+	if(!doWholeProgCompare)
+		mVUcacheProg(mVU, *mVU.prog.cur);
 }
 
 //------------------------------------------------------------------
@@ -155,7 +156,7 @@ void doIbit(mV)
 		else
 		{
 			u32 tempI;
-			if (CHECK_VU_OVERFLOW && ((curI & 0x7fffffff) >= 0x7f800000))
+			if (CHECK_VU_OVERFLOW(mVU.index) && ((curI & 0x7fffffff) >= 0x7f800000))
 			{
 				DevCon.WriteLn(Color_Green, "microVU%d: Clamping I Reg", mVU.index);
 				tempI = (0x80000000 & curI) | 0x7f7fffff; // Clamp I Reg
@@ -458,16 +459,6 @@ void mVUdebugPrintBlocks(microVU& mVU, bool isEndPC)
 	}
 }
 
-// Saves Pipeline State for resuming from early exits
-__fi void mVUsavePipelineState(microVU& mVU)
-{
-	u32* lpS = (u32*)&mVU.prog.lpState;
-	for (size_t i = 0; i < (sizeof(microRegInfo) - 4) / 4; i++, lpS++)
-	{
-		xMOV(ptr32[lpS], lpS[0]);
-	}
-}
-
 // Test cycles to see if we need to exit-early...
 void mVUtestCycles(microVU& mVU, microFlagCycles& mFC)
 {
@@ -482,9 +473,31 @@ void mVUtestCycles(microVU& mVU, microFlagCycles& mFC)
 	xCMP(eax, 0);
 	xForwardJGE32 skip;
 
-	mVUsavePipelineState(mVU);
-	xMOV(ptr32[&mVU.regs().nextBlockCycles], mVUcycles);
+	u8* writeback = x86Ptr;
+	xLoadFarAddr(rax, x86Ptr);
+	xFastCall((void*)mVU.copyPLState);
+
+	if (EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack)
+		xMOV(ptr32[&mVU.regs().nextBlockCycles], mVUcycles);
 	mVUendProgram(mVU, &mFC, 0);
+
+	{
+		if(x86caps.hasAVX2)
+			xAlignPtr(32);
+		else
+			xAlignPtr(16);
+
+		u8* curx86Ptr = x86Ptr;
+		x86SetPtr(writeback);
+		xLoadFarAddr(rax, curx86Ptr);
+		x86SetPtr(curx86Ptr);
+
+		static_assert((sizeof(microRegInfo) % 4) == 0);
+		const u32* lpPtr = reinterpret_cast<const u32*>(&mVU.prog.lpState);
+		const u32* lpEnd = lpPtr + (sizeof(microRegInfo) / 4);
+		while (lpPtr != lpEnd)
+			xWrite32(*(lpPtr++));
+	}
 
 	skip.SetTarget();
 
@@ -594,6 +607,96 @@ void mVUSaveFlags(microVU& mVU, microFlagCycles& mFC, microFlagCycles& mFCBackup
 	memcpy(&mFCBackup, &mFC, sizeof(microFlagCycles));
 	mVUsetFlags(mVU, mFCBackup); // Sets Up Flag instances
 }
+
+static void mvuPreloadRegisters(microVU& mVU, u32 endCount)
+{
+	static constexpr const int REQUIRED_FREE_XMMS = 3; // some space for temps
+	static constexpr const int REQUIRED_FREE_GPRS = 1; // some space for temps
+
+	u32 vfs_loaded = 0;
+	u32 vis_loaded = 0;
+
+	for (int reg = 0; reg < mVU.regAlloc->getXmmCount(); reg++)
+	{
+		const int vf = mVU.regAlloc->getRegVF(reg);
+		if (vf >= 0)
+			vfs_loaded |= (1u << vf);
+	}
+
+	for (int reg = 0; reg < mVU.regAlloc->getGPRCount(); reg++)
+	{
+		const int vi = mVU.regAlloc->getRegVI(reg);
+		if (vi >= 0)
+			vis_loaded |= (1u << vi);
+	}
+
+	const u32 orig_pc = iPC;
+	const u32 orig_code = mVU.code;
+	int free_regs = mVU.regAlloc->getFreeXmmCount();
+	int free_gprs = mVU.regAlloc->getFreeGPRCount();
+
+	auto preloadVF = [&mVU, &vfs_loaded, &free_regs](u8 reg)
+	{
+		if (free_regs <= REQUIRED_FREE_XMMS || reg == 0 || (vfs_loaded & (1u << reg)) != 0)
+			return;
+
+		mVU.regAlloc->clearNeeded(mVU.regAlloc->allocReg(reg));
+		vfs_loaded |= (1u << reg);
+		free_regs--;
+	};
+
+	auto preloadVI = [&mVU, &vis_loaded, &free_gprs](u8 reg)
+	{
+		if (free_gprs <= REQUIRED_FREE_GPRS || reg == 0 || (vis_loaded & (1u << reg)) != 0)
+			return;
+
+		mVU.regAlloc->clearNeeded(mVU.regAlloc->allocGPR(reg));
+		vis_loaded |= (1u << reg);
+		free_gprs--;
+	};
+
+	auto canPreload = [&free_regs, &free_gprs]() {
+		return (free_regs >= REQUIRED_FREE_XMMS || free_gprs >= REQUIRED_FREE_GPRS);
+	};
+
+	for (u32 x = 0; x < endCount && canPreload(); x++)
+	{
+		incPC(1);
+
+		const microOp* info = &mVUinfo;
+		if (info->doXGKICK)
+			break;
+
+		for (u32 i = 0; i < 2; i++)
+		{
+			preloadVF(info->uOp.VF_read[i].reg);
+			preloadVF(info->lOp.VF_read[i].reg);
+			if (info->lOp.VI_read[i].used)
+				preloadVI(info->lOp.VI_read[i].reg);
+		}
+
+		const microVFreg& uvfr = info->uOp.VF_write;
+		if (uvfr.reg != 0 && (!uvfr.x || !uvfr.y || !uvfr.z || !uvfr.w))
+		{
+			// not writing entire vector
+			preloadVF(uvfr.reg);
+		}
+
+		const microVFreg& lvfr = info->lOp.VF_write;
+		if (lvfr.reg != 0 && (!lvfr.x || !lvfr.y || !lvfr.z || !lvfr.w))
+		{
+			// not writing entire vector
+			preloadVF(lvfr.reg);
+		}
+
+		if (info->lOp.branch)
+			break;
+	}
+
+	iPC = orig_pc;
+	mVU.code = orig_code;
+}
+
 void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 {
 	microFlagCycles mFC;
@@ -678,7 +781,9 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 		}
 		else
 		{
-			mVUregs.xgkickcycles = 0;
+			// XGKick command counts as one cycle for the transfer.
+			// Can be tested with Resident Evil: Outbreak, Kingdom Hearts, CART Fury.
+			mVUregs.xgkickcycles = 1;
 			mVUlow.kickcycles = 0;
 		}
 
@@ -757,8 +862,21 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	mVUbranch = 0;
 	u32 x = 0;
 
+	mvuPreloadRegisters(mVU, endCount);
+
 	for (; x < endCount; x++)
 	{
+#if 0
+		if (mVU.index == 1 && (x == 0 || true))
+		{
+			mVU.regAlloc->flushAll(false);
+			mVUbackupRegs(mVU, true);
+			xFastCall(DumpVUState, mVU.index, (xPC) | ((x == 0) ? 0x80000000 : 0));
+			mVUrestoreRegs(mVU, true);
+			//if (xPC == 0x1358) __debugbreak();
+		}
+#endif
+
 		if (mVUinfo.isEOB)
 		{
 			handleBadOp(mVU, x);
@@ -800,7 +918,8 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 				}
 				incPC(2);
 				mVUsetupRange(mVU, xPC, false);
-				xMOV(ptr32[&mVU.regs().nextBlockCycles], 0);
+				if (EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Gamefixes.FullVU0SyncHack)
+					xMOV(ptr32[&mVU.regs().nextBlockCycles], 0);
 				mVUendProgram(mVU, &mFC, 0);
 				normBranchCompile(mVU, xPC);
 				incPC(-2);

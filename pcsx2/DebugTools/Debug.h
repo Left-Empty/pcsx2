@@ -91,7 +91,7 @@ public:
 	{
 		return SysTraceLog::IsActive() && EmuConfig.Trace.EE.m_EnableAll;
 	}
-	
+
 	std::string GetCategory() const override { return "EE"; }
 };
 
@@ -266,7 +266,7 @@ struct SysTraceLogPack
 		SysTraceLog_EE_Disasm		COP1;
 		SysTraceLog_EE_Disasm		COP2;
 		SysTraceLog_EE_Disasm		Cache;
-		
+
 		SysTraceLog_EE_Registers	KnownHw;
 		SysTraceLog_EE_Registers	UnknownHw;
 		SysTraceLog_EE_Registers	DMAhw;
@@ -281,7 +281,7 @@ struct SysTraceLogPack
 
 		EE_PACK();
 	} EE;
-	
+
 	struct IOP_PACK
 	{
 		SysTraceLog_IOP				Bios;
@@ -322,11 +322,8 @@ struct SysConsoleLogPack
 	ConsoleLogFromVM<Color_Cyan>		eeConsole;
 	ConsoleLogFromVM<Color_Yellow>		iopConsole;
 	ConsoleLogFromVM<Color_Cyan>		deci2;
-
-#ifndef DISABLE_RECORDING
 	ConsoleLogFromVM<Color_StrongMagenta>	recordingConsole;
 	ConsoleLogFromVM<Color_Red>				controlInfo;
-#endif
 
 	SysConsoleLogPack();
 };
@@ -391,8 +388,5 @@ extern void __Log( const char* fmt, ... );
 #define iopConLog		SysConsole.iopConsole.IsActive()	&& SysConsole.iopConsole.Write
 #define sysConLog		SysConsole.sysoutConsole.IsActive()	&& SysConsole.sysoutConsole.Write
 #define pgifConLog		SysConsole.pgifLog.IsActive()		&& SysConsole.pgifLog.Write
-
-#ifndef DISABLE_RECORDING
-#	define recordingConLog	SysConsole.recordingConsole.IsActive()	&& SysConsole.recordingConsole.Write
-#	define controlLog		SysConsole.controlInfo.IsActive()		&& SysConsole.controlInfo.Write
-#endif
+#define recordingConLog	SysConsole.recordingConsole.IsActive()	&& SysConsole.recordingConsole.Write
+#define controlLog		SysConsole.controlInfo.IsActive()		&& SysConsole.controlInfo.Write

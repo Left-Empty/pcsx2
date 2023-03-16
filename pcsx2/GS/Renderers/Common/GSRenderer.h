@@ -16,38 +16,28 @@
 #pragma once
 
 #include "GS/GSState.h"
-#include "GS/GSCapture.h"
 #include <memory>
-
-#ifndef PCSX2_CORE
-#include <mutex>
-#endif
-
-struct HostKeyEvent;
+#include <string>
 
 class GSRenderer : public GSState
 {
 private:
 	bool Merge(int field);
+	bool BeginPresentFrame(bool frame_skip);
 
 	u64 m_shader_time_start = 0;
 
-#ifndef PCSX2_CORE
-	GSCapture m_capture;
-	std::mutex m_snapshot_mutex;
-	bool m_shift_key = false;
-	bool m_control_key = false;
-#endif
 	std::string m_snapshot;
 	u32 m_dump_frames = 0;
-	u32 m_skipped_duplicate_frames;
+	u32 m_skipped_duplicate_frames = 0;
 
 protected:
 	GSVector2i m_real_size{0, 0};
-	bool m_texture_shuffle;
+	bool m_texture_shuffle = false;
+	bool m_copy_16bit_to_target_shuffle = false;
 
-	virtual GSTexture* GetOutput(int i, int& y_offset) = 0;
-	virtual GSTexture* GetFeedbackOutput() { return nullptr; }
+	virtual GSTexture* GetOutput(int i, float& scale, int& y_offset) = 0;
+	virtual GSTexture* GetFeedbackOutput(float& scale) { return nullptr; }
 
 public:
 	GSRenderer();
@@ -59,24 +49,21 @@ public:
 
 	virtual void VSync(u32 field, bool registers_written);
 	virtual bool CanUpscale() { return false; }
-	virtual int GetUpscaleMultiplier() { return 1; }
-	virtual GSVector2 GetTextureScaleFactor() { return { 1.0f, 1.0f }; }
+	virtual float GetUpscaleMultiplier() { return 1.0f; }
+	virtual float GetTextureScaleFactor() { return 1.0f; }
 	GSVector2i GetInternalResolution();
 
-	virtual void PurgePool() override;
-	virtual void PurgeTextureCache();
+	virtual GSTexture* LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVector2i& offset, float* scale, const GSVector2i& size);
 
-	bool SaveSnapshotToMemory(u32 width, u32 height, std::vector<u32>* pixels);
+	bool SaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspect, bool crop_borders,
+		u32* width, u32* height, std::vector<u32>* pixels);
 
 	void QueueSnapshot(const std::string& path, u32 gsdump_frames);
 	void StopGSDump();
 	void PresentCurrentFrame();
 
-#ifndef PCSX2_CORE
-	bool BeginCapture(std::string& filename);
+	bool BeginCapture(std::string filename);
 	void EndCapture();
-	void KeyEvent(const HostKeyEvent& e);
-#endif
 };
 
 extern std::unique_ptr<GSRenderer> g_gs_renderer;

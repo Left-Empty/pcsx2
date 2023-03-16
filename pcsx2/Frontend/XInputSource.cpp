@@ -56,20 +56,9 @@ const char* XInputSource::s_button_names[XInputSource::NUM_BUTTONS] = {
 	"Guide", // XINPUT_GAMEPAD_GUIDE
 };
 const u16 XInputSource::s_button_masks[XInputSource::NUM_BUTTONS] = {
-	XINPUT_GAMEPAD_DPAD_UP,
-	XINPUT_GAMEPAD_DPAD_DOWN,
-	XINPUT_GAMEPAD_DPAD_LEFT,
-	XINPUT_GAMEPAD_DPAD_RIGHT,
-	XINPUT_GAMEPAD_START,
-	XINPUT_GAMEPAD_BACK,
-	XINPUT_GAMEPAD_LEFT_THUMB,
-	XINPUT_GAMEPAD_RIGHT_THUMB,
-	XINPUT_GAMEPAD_LEFT_SHOULDER,
-	XINPUT_GAMEPAD_RIGHT_SHOULDER,
-	XINPUT_GAMEPAD_A,
-	XINPUT_GAMEPAD_B,
-	XINPUT_GAMEPAD_X,
-	XINPUT_GAMEPAD_Y,
+	XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_START,
+	XINPUT_GAMEPAD_BACK, XINPUT_GAMEPAD_LEFT_THUMB, XINPUT_GAMEPAD_RIGHT_THUMB, XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
+	XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
 	0x400, // XINPUT_GAMEPAD_GUIDE
 };
 static const GenericInputBinding s_xinput_generic_binding_button_mapping[] = {
@@ -96,7 +85,6 @@ XInputSource::~XInputSource() = default;
 
 bool XInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
 {
-#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
 	// xinput1_3.dll is flawed and obsolete, but it's also commonly used by wrappers.
 	// For this reason, try to load it *only* from the application directory, and not system32.
 	m_xinput_module = LoadLibraryExW(L"xinput1_3", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
@@ -115,35 +103,59 @@ bool XInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex
 	}
 
 	// Try the hidden version of XInputGetState(), which lets us query the guide button.
-	m_xinput_get_state =
-		reinterpret_cast<decltype(m_xinput_get_state)>(GetProcAddress(m_xinput_module, reinterpret_cast<LPCSTR>(100)));
+	m_xinput_get_state = reinterpret_cast<decltype(m_xinput_get_state)>(GetProcAddress(m_xinput_module, reinterpret_cast<LPCSTR>(100)));
 	if (!m_xinput_get_state)
-		reinterpret_cast<decltype(m_xinput_get_state)>(GetProcAddress(m_xinput_module, "XInputGetState"));
-	m_xinput_set_state =
-		reinterpret_cast<decltype(m_xinput_set_state)>(GetProcAddress(m_xinput_module, "XInputSetState"));
+		m_xinput_get_state = reinterpret_cast<decltype(m_xinput_get_state)>(GetProcAddress(m_xinput_module, "XInputGetState"));
+	m_xinput_set_state = reinterpret_cast<decltype(m_xinput_set_state)>(GetProcAddress(m_xinput_module, "XInputSetState"));
 	m_xinput_get_capabilities =
 		reinterpret_cast<decltype(m_xinput_get_capabilities)>(GetProcAddress(m_xinput_module, "XInputGetCapabilities"));
 
 	// SCP extension, only exists when the bridge xinput1_3.dll is in use
-	m_xinput_get_extended =
-		reinterpret_cast<decltype(m_xinput_get_extended)>(GetProcAddress(m_xinput_module, "XInputGetExtended"));
-#else
-	m_xinput_get_state = XInputGetState;
-	m_xinput_set_state = XInputSetState;
-	m_xinput_get_capabilities = XInputGetCapabilities;
-	m_xinput_get_extended = nullptr;
-#endif
+	m_xinput_get_extended = reinterpret_cast<decltype(m_xinput_get_extended)>(GetProcAddress(m_xinput_module, "XInputGetExtended"));
 	if (!m_xinput_get_state || !m_xinput_set_state || !m_xinput_get_capabilities)
 	{
 		Console.Error("Failed to get XInput function pointers.");
 		return false;
 	}
 
+	ReloadDevices();
 	return true;
 }
 
 void XInputSource::UpdateSettings(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
 {
+}
+
+bool XInputSource::ReloadDevices()
+{
+	bool changed = false;
+	for (u32 i = 0; i < NUM_CONTROLLERS; i++)
+	{
+		XINPUT_STATE new_state;
+		SCP_EXTN new_state_scp;
+		DWORD result = m_xinput_get_extended ? m_xinput_get_extended(i, &new_state_scp) : ERROR_NOT_SUPPORTED;
+		if (result != ERROR_SUCCESS)
+			result = m_xinput_get_state(i, &new_state);
+
+		if (result == ERROR_SUCCESS)
+		{
+			if (m_controllers[i].connected)
+				continue;
+
+			HandleControllerConnection(i);
+			changed = true;
+		}
+		else if (result == ERROR_DEVICE_NOT_CONNECTED)
+		{
+			if (!m_controllers[i].connected)
+				continue;
+
+			HandleControllerDisconnection(i);
+			changed = true;
+		}
+	}
+
+	return changed;
 }
 
 void XInputSource::Shutdown()
@@ -154,13 +166,11 @@ void XInputSource::Shutdown()
 			HandleControllerDisconnection(i);
 	}
 
-#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
 	if (m_xinput_module)
 	{
 		FreeLibrary(m_xinput_module);
 		m_xinput_module = nullptr;
 	}
-#endif
 
 	m_xinput_get_state = nullptr;
 	m_xinput_set_state = nullptr;
@@ -173,6 +183,8 @@ void XInputSource::PollEvents()
 	for (u32 i = 0; i < NUM_CONTROLLERS; i++)
 	{
 		const bool was_connected = m_controllers[i].connected;
+		if (!was_connected)
+			continue;
 
 		SCP_EXTN new_state_scp;
 		DWORD result = m_xinput_get_extended ? m_xinput_get_extended(i, &new_state_scp) : ERROR_NOT_SUPPORTED;
@@ -216,15 +228,13 @@ std::vector<std::pair<std::string, std::string>> XInputSource::EnumerateDevices(
 		if (!m_controllers[i].connected)
 			continue;
 
-		ret.emplace_back(StringUtil::StdStringFromFormat("XInput-%u", i),
-			StringUtil::StdStringFromFormat("XInput Controller %u", i));
+		ret.emplace_back(StringUtil::StdStringFromFormat("XInput-%u", i), StringUtil::StdStringFromFormat("XInput Controller %u", i));
 	}
 
 	return ret;
 }
 
-std::optional<InputBindingKey> XInputSource::ParseKeyString(
-	const std::string_view& device, const std::string_view& binding)
+std::optional<InputBindingKey> XInputSource::ParseKeyString(const std::string_view& device, const std::string_view& binding)
 {
 	if (!StringUtil::StartsWith(device, "XInput-") || binding.empty())
 		return std::nullopt;
@@ -266,7 +276,7 @@ std::optional<InputBindingKey> XInputSource::ParseKeyString(
 				// found an axis!
 				key.source_subtype = InputSubclass::ControllerAxis;
 				key.data = i;
-				key.negative = (binding[0] == '-');
+				key.modifier = binding[0] == '-' ? InputModifier::Negate : InputModifier::None;
 				return key;
 			}
 		}
@@ -297,8 +307,8 @@ std::string XInputSource::ConvertKeyToString(InputBindingKey key)
 	{
 		if (key.source_subtype == InputSubclass::ControllerAxis && key.data < std::size(s_axis_names))
 		{
-			ret = StringUtil::StdStringFromFormat(
-				"XInput-%u/%c%s", key.source_index, key.negative ? '-' : '+', s_axis_names[key.data]);
+			const char modifier = key.modifier == InputModifier::Negate ? '-' : '+';
+			ret = StringUtil::StdStringFromFormat("XInput-%u/%c%s", key.source_index, modifier, s_axis_names[key.data]);
 		}
 		else if (key.source_subtype == InputSubclass::ControllerButton && key.data < std::size(s_button_names))
 		{
@@ -333,7 +343,7 @@ std::vector<InputBindingKey> XInputSource::EnumerateMotors()
 	return ret;
 }
 
-bool XInputSource::GetGenericBindingMapping(const std::string_view& device, GenericInputBindingMapping* mapping)
+bool XInputSource::GetGenericBindingMapping(const std::string_view& device, InputManager::GenericInputBindingMapping* mapping)
 {
 	if (!StringUtil::StartsWith(device, "XInput-"))
 		return false;
@@ -387,16 +397,15 @@ void XInputSource::HandleControllerConnection(u32 index)
 	cd.last_state = {};
 	cd.last_state_scp = {};
 
-	Host::OnInputDeviceConnected(StringUtil::StdStringFromFormat("XInput-%u", index),
-		StringUtil::StdStringFromFormat("XInput Controller %u", index));
+	InputManager::OnInputDeviceConnected(
+		StringUtil::StdStringFromFormat("XInput-%u", index), StringUtil::StdStringFromFormat("XInput Controller %u", index));
 }
 
 void XInputSource::HandleControllerDisconnection(u32 index)
 {
 	Console.WriteLn("XInput controller %u disconnected.", index);
+	InputManager::OnInputDeviceDisconnected(StringUtil::StdStringFromFormat("XInput-%u", index));
 	m_controllers[index] = {};
-
-	Host::OnInputDeviceDisconnected(StringUtil::StdStringFromFormat("XInput-%u", index));
 }
 
 void XInputSource::CheckForStateChanges(u32 index, const XINPUT_STATE& new_state)
@@ -411,8 +420,7 @@ void XInputSource::CheckForStateChanges(u32 index, const XINPUT_STATE& new_state
 #define CHECK_AXIS(field, axis, min_value, max_value) \
 	if (ogp.field != ngp.field) \
 	{ \
-		InputManager::InvokeEvents( \
-			MakeGenericControllerAxisKey(InputSourceType::XInput, index, axis), \
+		InputManager::InvokeEvents(MakeGenericControllerAxisKey(InputSourceType::XInput, index, axis), \
 			static_cast<float>(ngp.field) / ((ngp.field < 0) ? min_value : max_value)); \
 	}
 
@@ -436,11 +444,10 @@ void XInputSource::CheckForStateChanges(u32 index, const XINPUT_STATE& new_state
 			if ((old_button_bits & button_mask) != (new_button_bits & button_mask))
 			{
 				const GenericInputBinding generic_key = (button < std::size(s_xinput_generic_binding_button_mapping)) ?
-					s_xinput_generic_binding_button_mapping[button] : GenericInputBinding::Unknown;
+															s_xinput_generic_binding_button_mapping[button] :
+                                                            GenericInputBinding::Unknown;
 				const float value = ((new_button_bits & button_mask) != 0) ? 1.0f : 0.0f;
-				InputManager::InvokeEvents(
-					MakeGenericControllerButtonKey(InputSourceType::XInput, index, button),
-					value, generic_key);
+				InputManager::InvokeEvents(MakeGenericControllerButtonKey(InputSourceType::XInput, index, button), value, generic_key);
 			}
 		}
 	}
@@ -460,16 +467,14 @@ void XInputSource::CheckForStateChangesSCP(u32 index, const SCP_EXTN& new_state)
 #define CHECK_AXIS(field, mult) \
 	if (ogp.field != ngp.field) \
 	{ \
-		InputManager::InvokeEvents( \
-			MakeGenericControllerAxisKey(InputSourceType::XInput, index, axis), ngp.field * mult); \
+		InputManager::InvokeEvents(MakeGenericControllerAxisKey(InputSourceType::XInput, index, axis), ngp.field* mult); \
 	} \
 	axis++;
 
 #define CHECK_BUTTON(field) \
 	if (ogp.field != ngp.field) \
 	{ \
-		InputManager::InvokeEvents( \
-			MakeGenericControllerButtonKey(InputSourceType::XInput, index, button), ngp.field); \
+		InputManager::InvokeEvents(MakeGenericControllerButtonKey(InputSourceType::XInput, index, button), ngp.field); \
 	} \
 	button++;
 

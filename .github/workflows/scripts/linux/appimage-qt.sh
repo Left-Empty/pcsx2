@@ -25,16 +25,18 @@
 #
 # For more information, please refer to <http://unlicense.org/>
 
-if [ "$#" -ne 3 ]; then
-    echo "Syntax: $0 <path to PCSX2 directory> <deps prefix> <output name>"
+SCRIPTDIR=$(dirname "${BASH_SOURCE[0]}")
+source "$SCRIPTDIR/functions.sh"
+
+if [ "$#" -ne 4 ]; then
+    echo "Syntax: $0 <path to pcsx2 directory> <path to build directory> <deps prefix> <output name>"
     exit 1
 fi
 
 PCSX2DIR=$1
-DEPSDIR=$2
-NAME=$3
-
-BINDIR="$PCSX2DIR/bin"
+BUILDDIR=$2
+DEPSDIR=$3
+NAME=$4
 
 BINARY=pcsx2-qt
 APPDIRNAME=PCSX2.AppDir
@@ -90,6 +92,7 @@ declare -a SYSLIBS=(
 	"libxkbcommon.so.0"
 	"libxkbcommon-x11.so.0"
 	"pulseaudio/libpulsecommon-13.99.so"
+	"libasound.so.2"
 	"libfreetype.so.6"
 	"libpcre2-16.so.0"
 	"libexpat.so.1"
@@ -118,6 +121,42 @@ declare -a SYSLIBS=(
 	"libpng16.so.16"
 	"libudev.so.1"
 	"libuuid.so.1"
+	"libcurl.so.4"
+	"libnghttp2.so.14"
+	"libidn2.so.0"
+	"librtmp.so.1"
+	"libssh.so.4"
+	"libpsl.so.5"
+	"libssl.so.1.1"
+	"libnettle.so.7"
+	"libgnutls.so.30"
+	"libgssapi_krb5.so.2"
+	"libldap_r-2.4.so.2"
+	"liblber-2.4.so.2"
+	"libbrotlidec.so.1"
+	"libunistring.so.2"
+	"libhogweed.so.5"
+	"libgmp.so.10"
+	"libp11-kit.so.0"
+	"libtasn1.so.6"
+	"libkrb5.so.3"
+	"libk5crypto.so.3"
+	"libcom_err.so.2"
+	"libkrb5support.so.0"
+	"libsasl2.so.2"
+	"libgssapi.so.3"
+	"libbrotlicommon.so.1"
+	"libkeyutils.so.1"
+	"libheimntlm.so.0"
+	"libkrb5.so.26"
+	"libasn1.so.8"
+	"libhcrypto.so.4"
+	"libroken.so.18"
+	"libwind.so.0"
+	"libheimbase.so.1"
+	"libhx509.so.5"
+	"libsqlite3.so.0"
+	"libcrypt.so.1"
 )
 
 declare -a DEPLIBS=(
@@ -143,6 +182,7 @@ declare -a QTPLUGINS=(
 	"plugins/imageformats"
 	"plugins/platforms"
 	#"plugins/platformthemes" # Enable this if we want to ship GTK+ themes at any point.
+	"plugins/tls"
 	"plugins/wayland-decoration-client"
 	"plugins/wayland-graphics-integration-client"
 	"plugins/wayland-graphics-integration-server"
@@ -153,7 +193,7 @@ declare -a QTPLUGINS=(
 set -e
 
 if [ ! -f appimagetool-x86_64.AppImage ]; then
-	wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+	retry_command wget -O appimagetool-x86_64.AppImage https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
 	chmod +x appimagetool-x86_64.AppImage
 fi
 
@@ -161,14 +201,10 @@ OUTDIR=$(realpath "./$APPDIRNAME")
 SCRIPTDIR=$(dirname "${BASH_SOURCE[0]}")
 rm -fr "$OUTDIR"
 mkdir "$OUTDIR"
-
-mkdir -p "$OUTDIR/usr/bin" "$OUTDIR/usr/lib" "$OUTDIR/usr/lib/pulseaudio"
+mkdir "$OUTDIR/usr"
 
 echo "Copying binary and resources..."
-cp -a "$BINDIR/$BINARY" "$BINDIR/resources" "$BINDIR/shaders" "$OUTDIR/usr/bin"
-
-# Don't need old wx locales.
-rm -fr "$OUTDIR/usr/bin/resources/locale"
+cp -a "$BUILDDIR/bin" "$OUTDIR/usr"
 
 # Patch RPATH so the binary goes hunting for shared libraries in the AppDir instead of system.
 echo "Patching RPATH in ${BINARY}..."
@@ -179,6 +215,7 @@ patchelf --set-rpath '$ORIGIN/../lib' "$OUTDIR/usr/bin/$BINARY"
 
 # Libraries we pull in from the system.
 echo "Copying system libraries..."
+mkdir -p "$OUTDIR/usr/lib" "$OUTDIR/usr/lib/pulseaudio"
 for lib in "${SYSLIBS[@]}"; do
 	blib=$(basename "$lib")
 	if [ -f "/lib/x86_64-linux-gnu/$lib" ]; then
@@ -245,7 +282,7 @@ Plugins = ../lib/plugins
 EOF
 
 echo "Copy desktop/icon..."
-cp "$PCSX2DIR/pcsx2/gui/Resources/AppIcon64.png" "$OUTDIR/PCSX2.png"
+cp "$PCSX2DIR/pcsx2/Resources/AppIcon64.png" "$OUTDIR/PCSX2.png"
 cp "$SCRIPTDIR/pcsx2-qt.desktop" "$OUTDIR/PCSX2.desktop"
 cp "$SCRIPTDIR/AppRun-qt" "$OUTDIR/AppRun"
 

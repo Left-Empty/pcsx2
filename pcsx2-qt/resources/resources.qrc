@@ -25,6 +25,7 @@
 		<file>icons/black/svg/flashlight-line.svg</file>
 		<file>icons/black/svg/flask-line.svg</file>
 		<file>icons/black/svg/folder-add-line.svg</file>
+		<file>icons/black/svg/folder-download-line.svg</file>
 		<file>icons/black/svg/folder-open-line.svg</file>
 		<file>icons/black/svg/folder-reduce-line.svg</file>
 		<file>icons/black/svg/folder-settings-line.svg</file>
@@ -33,9 +34,13 @@
 		<file>icons/black/svg/gamepad-line.svg</file>
 		<file>icons/black/svg/global-line.svg</file>
 		<file>icons/black/svg/hard-drive-2-line.svg</file>
+		<file>icons/black/svg/image-fill.svg</file>
 		<file>icons/black/svg/keyboard-line.svg</file>
 		<file>icons/black/svg/layout-grid-line.svg</file>
+		<file>icons/black/svg/lightbulb-line.svg</file>
 		<file>icons/black/svg/list-check.svg</file>
+		<file>icons/black/svg/login-box-line.svg</file>
+		<file>icons/black/svg/mouse-line.svg</file>
 		<file>icons/black/svg/pause-line.svg</file>
 		<file>icons/black/svg/play-line.svg</file>
 		<file>icons/black/svg/price-tag-3-line.svg</file>
@@ -46,7 +51,9 @@
 		<file>icons/black/svg/sd-card-line.svg</file>
 		<file>icons/black/svg/settings-3-line.svg</file>
 		<file>icons/black/svg/shut-down-line.svg</file>
+		<file>icons/black/svg/trophy-line.svg</file>
 		<file>icons/black/svg/tv-2-line.svg</file>
+		<file>icons/black/svg/usb-fill.svg</file>
 		<file>icons/black/svg/volume-up-line.svg</file>
 		<file>icons/black/svg/window-2-line.svg</file>
 		<file>icons/discord.png</file>
@@ -79,6 +86,7 @@
 		<file>icons/white/svg/flashlight-line.svg</file>
 		<file>icons/white/svg/flask-line.svg</file>
 		<file>icons/white/svg/folder-add-line.svg</file>
+		<file>icons/white/svg/folder-download-line.svg</file>
 		<file>icons/white/svg/folder-open-line.svg</file>
 		<file>icons/white/svg/folder-reduce-line.svg</file>
 		<file>icons/white/svg/folder-settings-line.svg</file>
@@ -87,9 +95,13 @@
 		<file>icons/white/svg/gamepad-line.svg</file>
 		<file>icons/white/svg/global-line.svg</file>
 		<file>icons/white/svg/hard-drive-2-line.svg</file>
+		<file>icons/white/svg/image-fill.svg</file>
 		<file>icons/white/svg/keyboard-line.svg</file>
 		<file>icons/white/svg/layout-grid-line.svg</file>
+		<file>icons/white/svg/lightbulb-line.svg</file>
 		<file>icons/white/svg/list-check.svg</file>
+		<file>icons/white/svg/login-box-line.svg</file>
+		<file>icons/white/svg/mouse-line.svg</file>
 		<file>icons/white/svg/pause-line.svg</file>
 		<file>icons/white/svg/play-line.svg</file>
 		<file>icons/white/svg/price-tag-3-line.svg</file>
@@ -100,9 +112,13 @@
 		<file>icons/white/svg/sd-card-line.svg</file>
 		<file>icons/white/svg/settings-3-line.svg</file>
 		<file>icons/white/svg/shut-down-line.svg</file>
+		<file>icons/white/svg/trophy-line.svg</file>
 		<file>icons/white/svg/tv-2-line.svg</file>
+		<file>icons/white/svg/usb-fill.svg</file>
 		<file>icons/white/svg/volume-up-line.svg</file>
 		<file>icons/white/svg/window-2-line.svg</file>
+		<file>images/DrivingForce.png</file>
 		<file>images/dualshock-2.png</file>
+		<file>images/GTForce.png</file>
 	</qresource>
 </RCC>

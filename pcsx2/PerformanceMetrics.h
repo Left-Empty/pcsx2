@@ -14,6 +14,8 @@
  */
 
 #pragma once
+
+#include <array>
 #include "common/Threading.h"
 
 namespace PerformanceMetrics
@@ -25,9 +27,12 @@ namespace PerformanceMetrics
 		DISPFBBlit
 	};
 
+	static constexpr u32 NUM_FRAME_TIME_SAMPLES = 150;
+	using FrameTimeHistory = std::array<float, NUM_FRAME_TIME_SAMPLES>;
+
 	void Clear();
 	void Reset();
-	void Update(bool gs_register_write, bool fb_blit);
+	void Update(bool gs_register_write, bool fb_blit, bool is_skipping_present);
 	void OnGPUPresent(float gpu_time);
 
 	/// Sets the EE thread for CPU usage calculations.
@@ -49,7 +54,8 @@ namespace PerformanceMetrics
 	float GetInternalFPS();
 	float GetSpeed();
 	float GetAverageFrameTime();
-	float GetWorstFrameTime();
+	float GetMinimumFrameTime();
+	float GetMaximumFrameTime();
 
 	double GetCPUThreadUsage();
 	double GetCPUThreadAverageTime();
@@ -57,6 +63,8 @@ namespace PerformanceMetrics
 	float GetGSThreadAverageTime();
 	float GetVUThreadUsage();
 	float GetVUThreadAverageTime();
+	float GetCaptureThreadUsage();
+	float GetCaptureThreadAverageTime();
 
 	u32 GetGSSWThreadCount();
 	double GetGSSWThreadUsage(u32 index);
@@ -64,4 +72,7 @@ namespace PerformanceMetrics
 
 	float GetGPUUsage();
 	float GetGPUAverageTime();
+
+	const FrameTimeHistory& GetFrameTimeHistory();
+	u32 GetFrameTimeHistoryPos();
 } // namespace PerformanceMetrics

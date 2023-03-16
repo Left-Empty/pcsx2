@@ -15,22 +15,25 @@
 
 #include "PrecompiledHeader.h"
 #include "GSDirtyRect.h"
+#include <vector>
 
 GSDirtyRect::GSDirtyRect() :
 	r(GSVector4i::zero()),
 	psm(PSM_PSMCT32),
-	bw(1)
+	bw(1),
+	rgba({})
 {
 }
 
-GSDirtyRect::GSDirtyRect(const GSVector4i& r, const u32 psm, const u32 bw) :
+GSDirtyRect::GSDirtyRect(GSVector4i& r, u32 psm, u32 bw, RGBAMask rgba) :
 	r(r),
 	psm(psm),
-	bw(bw)
+	bw(bw),
+	rgba(rgba)
 {
 }
 
-const GSVector4i GSDirtyRect::GetDirtyRect(const GIFRegTEX0& TEX0) const
+GSVector4i GSDirtyRect::GetDirtyRect(GIFRegTEX0 TEX0) const
 {
 	GSVector4i _r;
 
@@ -53,15 +56,13 @@ const GSVector4i GSDirtyRect::GetDirtyRect(const GIFRegTEX0& TEX0) const
 	return _r;
 }
 
-//
-
-const GSVector4i GSDirtyRectList::GetDirtyRect(const GIFRegTEX0& TEX0, const GSVector2i& size) const
+GSVector4i GSDirtyRectList::GetTotalRect(GIFRegTEX0 TEX0, const GSVector2i& size) const
 {
 	if (!empty())
 	{
 		GSVector4i r(INT_MAX, INT_MAX, 0, 0);
 
-		for (const auto& dirty_rect : *this)
+		for (auto& dirty_rect : *this)
 		{
 			r = r.runion(dirty_rect.GetDirtyRect(TEX0));
 		}
@@ -74,9 +75,27 @@ const GSVector4i GSDirtyRectList::GetDirtyRect(const GIFRegTEX0& TEX0, const GSV
 	return GSVector4i::zero();
 }
 
-const GSVector4i GSDirtyRectList::GetDirtyRectAndClear(const GIFRegTEX0& TEX0, const GSVector2i& size)
+u32 GSDirtyRectList::GetDirtyChannels()
 {
-	const GSVector4i r = GetDirtyRect(TEX0, size);
-	clear();
-	return r;
+	u32 channels = 0;
+
+	if (!empty())
+	{
+		for (auto& dirty_rect : *this)
+		{
+			channels |= dirty_rect.rgba._u32;
+		}
+	}
+
+	return channels;
 }
+
+GSVector4i GSDirtyRectList::GetDirtyRect(size_t index, GIFRegTEX0 TEX0, const GSVector4i& clamp) const
+{
+	const GSVector4i r = (*this)[index].GetDirtyRect(TEX0);
+
+	GSVector2i bs = GSLocalMemory::m_psm[TEX0.PSM].bs;
+
+	return r.ralign<Align_Outside>(bs).rintersect(clamp);
+}
+

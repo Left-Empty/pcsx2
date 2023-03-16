@@ -16,14 +16,14 @@
 #include "PrecompiledHeader.h"
 
 #include "common/RedtapeWindows.h"
+#include "common/RedtapeWilCom.h"
 #include "common/StringUtil.h"
 
 #include "fmt/core.h"
 
 #include <stdio.h>
-#include <windows.h>
-#include <winsock2.h>
-#include <ws2ipdef.h>
+#include <WinSock2.h>
+#include <WS2tcpip.h>
 #include <iphlpapi.h>
 
 #include <Netcfgx.h>
@@ -36,6 +36,8 @@
 
 #include <wil/com.h>
 #include <wil/resource.h>
+
+#include "DEV9/PacketReader/MAC_Address.h"
 
 //=============
 // TAP IOCTLs
@@ -206,7 +208,7 @@ AdapterOptions TAPAdapter::GetAdapterOptions()
 	return AdapterOptions::None;
 }
 
-static int TAPGetMACAddress(HANDLE handle, u8* addr)
+static int TAPGetMACAddress(HANDLE handle, PacketReader::MAC_Address* addr)
 {
 	DWORD len = 0;
 
@@ -371,15 +373,15 @@ bool TAPGetWin32Adapter(const std::string& name, PIP_ADAPTER_ADDRESSES adapter, 
 	 * but it doesn't tell you whether it's a bridge or an LBFO team or something more exotic.
 	 * The way to distinguish exactly which flavor of ms_implat you have is to look at which LWF driver is bound to the *virtual miniport* above the IM driver.
 	 * This is two steps then.
-	 * 
+	 *
 	 * 1. Given a physical NIC, you first want to determine which virtual NIC is layered over it.
 	 * 2. Given a virtual NIC, you want to determine whether ms_bridge is bound to it.
-	 * 
+	 *
 	 * To get the first part, look through the interface stack table (GetIfStackTable). Search the stack table for any entry where the lower is the IfIndex of the physical NIC.
 	 * For any such entry (there will probably be a few), check if that entry's upper IfIndex is the IfIndex for a virtual miniport with component ID "COMPOSITEBUS\MS_IMPLAT_MP".
 	 * If you find such a thing, that means the physical NIC is a member of a bridge/LBFO/something-else-fancy.
 	 * If you don't find it, then you know the NIC isn't part of the bridge that comes with Windows 8 / Windows 10.
-	 * 
+	 *
 	 * To get the second part, just use the same INetCfg code above on the *virtual* NIC's component. If the ms_bridge component is bound to the virtual NIC,
 	 * then that virtual NIC is doing bridging. Otherwise, it's doing something else (like LBFO).
 	 */
@@ -392,7 +394,6 @@ bool TAPGetWin32Adapter(const std::string& name, PIP_ADAPTER_ADDRESSES adapter, 
 	std::vector<NET_IFINDEX> potentialBridges;
 	std::vector<NET_IFINDEX> searchList;
 	searchList.push_back(pAdapterInfo->IfIndex);
-	int checkCount = 1;
 
 	PMIB_IFSTACK_TABLE table;
 	GetIfStackTable(&table);
@@ -552,17 +553,17 @@ TAPAdapter::TAPAdapter()
 
 	cancel = CreateEvent(NULL, TRUE, FALSE, NULL);
 
-	u8 hostMAC[6];
-	u8 newMAC[6];
+	PacketReader::MAC_Address hostMAC;
+	PacketReader::MAC_Address newMAC;
 
-	TAPGetMACAddress(htap, hostMAC);
-	memcpy(newMAC, ps2MAC, 6);
+	TAPGetMACAddress(htap, &hostMAC);
+	newMAC = ps2MAC;
 
 	//Lets take the hosts last 2 bytes to make it unique on Xlink
-	newMAC[5] = hostMAC[4];
-	newMAC[4] = hostMAC[5];
+	newMAC.bytes[5] = hostMAC.bytes[4];
+	newMAC.bytes[4] = hostMAC.bytes[5];
 
-	SetMACAddress(newMAC);
+	SetMACAddress(&newMAC);
 
 	IP_ADAPTER_ADDRESSES adapter;
 	std::unique_ptr<IP_ADAPTER_ADDRESSES[]> buffer;

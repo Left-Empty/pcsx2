@@ -26,7 +26,8 @@
 
 #include "MemoryCardSettingsWidget.h"
 #include "CreateMemoryCardDialog.h"
-#include "EmuThread.h"
+#include "QtHost.h"
+#include "MemoryCardConvertDialog.h"
 #include "QtUtils.h"
 #include "SettingWidgetBinder.h"
 #include "SettingsDialog.h"
@@ -69,6 +70,12 @@ MemoryCardSettingsWidget::MemoryCardSettingsWidget(SettingsDialog* dialog, QWidg
 	connect(m_ui.deleteCard, &QPushButton::clicked, this, &MemoryCardSettingsWidget::deleteCard);
 
 	refresh();
+
+	dialog->registerWidgetHelp(m_ui.autoEject, tr("Auto-eject Memory Cards when loading save states"), tr("Checked"),
+		tr("Avoids broken Memory Card saves. May not work with some games such as Guitar Hero."));
+
+	dialog->registerWidgetHelp(m_ui.automaticManagement, tr("Automatically manage saves based on running game"), tr("Checked"),
+		tr("(Folder type only / Card size: Auto) Loads only the relevant booted game saves, ignoring others. Avoids running out of space for saves."));
 }
 
 MemoryCardSettingsWidget::~MemoryCardSettingsWidget() = default;
@@ -92,7 +99,7 @@ void MemoryCardSettingsWidget::setupAdditionalUi()
 	for (u32 i = 0; i < static_cast<u32>(m_slots.size()); i++)
 		createSlotWidgets(&m_slots[i], i);
 
-	// button to swap memory cards
+	// button to swap Memory Cards
 	QToolButton* swap_button = new QToolButton(m_ui.portGroupBox);
 	swap_button->setIcon(QIcon::fromTheme("arrow-left-right-line"));
 	swap_button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
@@ -149,7 +156,7 @@ void MemoryCardSettingsWidget::tryInsertCard(u32 slot, const QString& newCard)
 	const std::vector<AvailableMcdInfo> mcds(FileMcd_GetAvailableCards(true));
 	if (std::none_of(mcds.begin(), mcds.end(), [&newCardStr](const AvailableMcdInfo& mcd) { return mcd.name == newCardStr; }))
 	{
-		QMessageBox::critical(this, tr("Error"), tr("This memory card is unknown."));
+		QMessageBox::critical(this, tr("Error"), tr("This Memory Card is unknown."));
 		return;
 	}
 
@@ -183,9 +190,13 @@ QString MemoryCardSettingsWidget::getSelectedCard() const
 
 void MemoryCardSettingsWidget::updateCardActions()
 {
-	const bool hasSelection = !getSelectedCard().isEmpty();
+	QString selectedCard = getSelectedCard();
+	const bool hasSelection = !selectedCard.isEmpty();
+	
+	std::optional<AvailableMcdInfo> cardInfo = FileMcd_GetCardInfo(selectedCard.toStdString());
+	bool isPS1 = (cardInfo.has_value() ? cardInfo.value().file_type == MemoryCardFileType::PS1 : false);
 
-	m_ui.convertCard->setEnabled(hasSelection);
+	m_ui.convertCard->setEnabled(hasSelection && !isPS1);
 	m_ui.duplicateCard->setEnabled(hasSelection);
 	m_ui.renameCard->setEnabled(hasSelection);
 	m_ui.deleteCard->setEnabled(hasSelection);
@@ -207,7 +218,7 @@ void MemoryCardSettingsWidget::deleteCard()
 		return;
 
 	if (QMessageBox::question(QtUtils::GetRootWidget(this), tr("Delete Memory Card"),
-			tr("Are you sure you wish to delete the memory card '%1'?\n\n"
+			tr("Are you sure you wish to delete the Memory Card '%1'?\n\n"
 			   "This action cannot be reversed, and you will lose any saves on the card.")
 				.arg(selectedCard)) != QMessageBox::Yes)
 	{
@@ -217,7 +228,7 @@ void MemoryCardSettingsWidget::deleteCard()
 	if (!FileMcd_DeleteCard(selectedCard.toStdString()))
 	{
 		QMessageBox::critical(QtUtils::GetRootWidget(this), tr("Delete Memory Card"),
-			tr("Failed to delete the memory card. The log may have more information."));
+			tr("Failed to delete the Memory Card. The log may have more information."));
 		return;
 	}
 
@@ -253,7 +264,7 @@ void MemoryCardSettingsWidget::renameCard()
 	if (!FileMcd_RenameCard(selectedCard.toStdString(), newNameStr))
 	{
 		QMessageBox::critical(QtUtils::GetRootWidget(this), tr("Rename Memory Card"),
-			tr("Failed to rename memory card. The log may contain more information."));
+			tr("Failed to rename Memory Card. The log may contain more information."));
 		return;
 	}
 
@@ -263,10 +274,14 @@ void MemoryCardSettingsWidget::renameCard()
 void MemoryCardSettingsWidget::convertCard()
 {
 	const QString selectedCard(getSelectedCard());
+	
 	if (selectedCard.isEmpty())
 		return;
 
-	QMessageBox::critical(this, tr("Error"), tr("Not yet implemented."));
+	MemoryCardConvertDialog dialog(QtUtils::GetRootWidget(this), selectedCard);
+	
+	if (dialog.IsSetup() && dialog.exec() == QDialog::Accepted)
+		refresh();
 }
 
 void MemoryCardSettingsWidget::listContextMenuRequested(const QPoint& pos)

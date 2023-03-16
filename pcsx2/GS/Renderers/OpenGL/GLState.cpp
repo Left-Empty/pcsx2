@@ -23,6 +23,7 @@ namespace GLState
 	GSVector4i scissor;
 
 	bool point_size = false;
+	float line_width = 1.0f;
 
 	bool blend;
 	u16 eq_RGB;
@@ -41,12 +42,10 @@ namespace GLState
 
 	GLuint ps_ss;
 
-	GLuint rt;
-	GLuint ds;
+	GSTextureOGL* rt = nullptr;
+	GSTextureOGL* ds = nullptr;
 	GLuint tex_unit[8];
 	GLuint64 tex_handle[8];
-
-	s64 available_vram;
 
 	void Clear()
 	{
@@ -71,13 +70,9 @@ namespace GLState
 
 		ps_ss = 0;
 
-		rt = 0;
-		ds = 0;
+		rt = nullptr;
+		ds = nullptr;
 		std::fill(std::begin(tex_unit), std::end(tex_unit), 0);
 		std::fill(std::begin(tex_handle), std::end(tex_handle), 0);
-
-		// Set a max vram limit for texture allocation
-		// (256MB are reserved for PBO/IBO/VBO/UBO buffers)
-		available_vram = (4096u - 256u) * 1024u * 1024u;
 	}
 } // namespace GLState

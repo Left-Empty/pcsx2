@@ -15,14 +15,14 @@
 
 #include "PrecompiledHeader.h"
 
-#include "EmuThread.h"
 #include "QtHost.h"
 #include "Settings/ControllerSettingsDialog.h"
 #include "Settings/ControllerGlobalSettingsWidget.h"
 #include "Settings/ControllerBindingWidgets.h"
 #include "Settings/HotkeySettingsWidget.h"
 
-#include "pcsx2/Frontend/INISettingsInterface.h"
+#include "pcsx2/Frontend/CommonHost.h"
+#include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/PAD/Host/PAD.h"
 #include "pcsx2/Sio.h"
 #include "pcsx2/VMManager.h"
@@ -82,7 +82,7 @@ void ControllerSettingsDialog::setCategory(Category category)
 			break;
 
 		case Category::HotkeySettings:
-			m_ui.settingsCategory->setCurrentRow(3);
+			m_ui.settingsCategory->setCurrentRow(5);
 			break;
 
 		default:
@@ -114,7 +114,8 @@ void ControllerSettingsDialog::onNewProfileClicked()
 	}
 
 	const int res = QMessageBox::question(this, tr("Create Input Profile"),
-		tr("Do you want to copy all bindings from the currently-selected profile to the new profile? Selecting No will create a completely empty profile."),
+		tr("Do you want to copy all bindings from the currently-selected profile to the new profile? Selecting No will create a completely "
+		   "empty profile."),
 		QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
 	if (res == QMessageBox::Cancel)
 		return;
@@ -140,7 +141,8 @@ void ControllerSettingsDialog::onNewProfileClicked()
 
 	if (!temp_si.Save())
 	{
-		QMessageBox::critical(this, tr("Error"), tr("Failed to save the new profile to '%1'.").arg(QString::fromStdString(temp_si.GetFileName())));
+		QMessageBox::critical(
+			this, tr("Error"), tr("Failed to save the new profile to '%1'.").arg(QString::fromStdString(temp_si.GetFileName())));
 		return;
 	}
 
@@ -162,8 +164,8 @@ void ControllerSettingsDialog::onLoadProfileClicked()
 	{
 		auto lock = Host::GetSettingsLock();
 		PAD::CopyConfiguration(Host::Internal::GetBaseSettingsLayer(), *m_profile_interface, true, true, false);
-		QtHost::QueueSettingsSave();
 	}
+	Host::CommitBaseSettingChanges();
 
 	g_emu_thread->applySettings();
 
@@ -206,9 +208,9 @@ void ControllerSettingsDialog::onRestoreDefaultsClicked()
 	// actually restore it
 	{
 		auto lock = Host::GetSettingsLock();
-		PAD::SetDefaultConfig(*Host::Internal::GetBaseSettingsLayer());
-		QtHost::QueueSettingsSave();
+		CommonHost::SetDefaultSettings(*Host::Internal::GetBaseSettingsLayer(), false, false, true, true, false);
 	}
+	Host::CommitBaseSettingChanges();
 
 	g_emu_thread->applySettings();
 
@@ -252,7 +254,7 @@ void ControllerSettingsDialog::onVibrationMotorsEnumerated(const QList<InputBind
 
 	for (const InputBindingKey key : motors)
 	{
-		const std::string key_str(InputManager::ConvertInputBindingKeyToString(key));
+		const std::string key_str(InputManager::ConvertInputBindingKeyToString(InputBindingInfo::Type::Motor, key));
 		if (!key_str.empty())
 			m_vibration_motors.push_back(QString::fromStdString(key_str));
 	}
@@ -294,7 +296,8 @@ void ControllerSettingsDialog::setBoolValue(const char* section, const char* key
 	}
 	else
 	{
-		QtHost::SetBaseBoolSettingValue(section, key, value);
+		Host::SetBaseBoolSettingValue(section, key, value);
+		Host::CommitBaseSettingChanges();
 		g_emu_thread->applySettings();
 	}
 }
@@ -309,7 +312,8 @@ void ControllerSettingsDialog::setIntValue(const char* section, const char* key,
 	}
 	else
 	{
-		QtHost::SetBaseIntSettingValue(section, key, value);
+		Host::SetBaseIntSettingValue(section, key, value);
+		Host::CommitBaseSettingChanges();
 		g_emu_thread->applySettings();
 	}
 }
@@ -324,7 +328,8 @@ void ControllerSettingsDialog::setStringValue(const char* section, const char* k
 	}
 	else
 	{
-		QtHost::SetBaseStringSettingValue(section, key, value);
+		Host::SetBaseStringSettingValue(section, key, value);
+		Host::CommitBaseSettingChanges();
 		g_emu_thread->applySettings();
 	}
 }
@@ -339,7 +344,8 @@ void ControllerSettingsDialog::clearSettingValue(const char* section, const char
 	}
 	else
 	{
-		QtHost::RemoveBaseSettingValue(section, key);
+		Host::RemoveBaseSettingValue(section, key);
+		Host::CommitBaseSettingChanges();
 		g_emu_thread->applySettings();
 	}
 }
@@ -376,8 +382,7 @@ void ControllerSettingsDialog::createWidgets()
 	}
 
 	// load mtap settings
-	const std::array<bool, 2> mtap_enabled = {{getBoolValue("Pad", "MultitapPort1", false),
-		getBoolValue("Pad", "MultitapPort2", false)}};
+	const std::array<bool, 2> mtap_enabled = {{getBoolValue("Pad", "MultitapPort1", false), getBoolValue("Pad", "MultitapPort2", false)}};
 
 	// we reorder things a little to make it look less silly for mtap
 	static constexpr const std::array<u32, MAX_PORTS> mtap_port_order = {{0, 2, 3, 4, 1, 5, 6, 7}};
@@ -397,11 +402,26 @@ void ControllerSettingsDialog::createWidgets()
 		const QString display_name(ci ? QString::fromUtf8(ci->display_name) : QStringLiteral("Unknown"));
 
 		QListWidgetItem* item = new QListWidgetItem();
-		item->setText(mtap_enabled[port] ?
-						  (tr("Controller Port %1%2\n%3").arg(port + 1).arg(s_mtap_slot_names[slot]).arg(display_name)) :
-                          tr("Controller Port %1\n%2").arg(port + 1).arg(display_name));
+		item->setText(mtap_enabled[port] ? (tr("Controller Port %1%2\n%3").arg(port + 1).arg(s_mtap_slot_names[slot]).arg(display_name)) :
+                                           tr("Controller Port %1\n%2").arg(port + 1).arg(display_name));
 		item->setIcon(m_port_bindings[global_slot]->getIcon());
 		item->setData(Qt::UserRole, QVariant(global_slot));
+		m_ui.settingsCategory->addItem(item);
+	}
+
+	// USB ports
+	for (u32 port = 0; port < USB::NUM_PORTS; port++)
+	{
+		m_usb_bindings[port] = new USBDeviceWidget(m_ui.settingsContainer, this, port);
+		m_ui.settingsContainer->addWidget(m_usb_bindings[port]);
+
+		const std::string dtype(getStringValue(fmt::format("USB{}", port + 1).c_str(), "Type", "None"));
+		const QString display_name(qApp->translate("USB", USB::GetDeviceName(dtype)));
+
+		QListWidgetItem* item = new QListWidgetItem();
+		item->setText(tr("USB Port %1\n%2").arg(port + 1).arg(display_name));
+		item->setIcon(m_usb_bindings[port]->getIcon());
+		item->setData(Qt::UserRole, QVariant(MAX_PORTS + port));
 		m_ui.settingsCategory->addItem(item);
 	}
 
@@ -427,7 +447,7 @@ void ControllerSettingsDialog::updateListDescription(u32 global_slot, Controller
 	{
 		QListWidgetItem* item = m_ui.settingsCategory->item(i);
 		const QVariant data(item->data(Qt::UserRole));
-		if (data.type() == QVariant::UInt && data.toUInt() == global_slot)
+		if (data.metaType().id() == QMetaType::UInt && data.toUInt() == global_slot)
 		{
 			const auto [port, slot] = sioConvertPadToPortAndSlot(global_slot);
 			const bool mtap_enabled = getBoolValue("Pad", (port == 0) ? "MultitapPort1" : "MultitapPort2", false);
@@ -435,14 +455,32 @@ void ControllerSettingsDialog::updateListDescription(u32 global_slot, Controller
 			const PAD::ControllerInfo* ci = PAD::GetControllerInfo(widget->getControllerType());
 			const QString display_name(ci ? QString::fromUtf8(ci->display_name) : QStringLiteral("Unknown"));
 
-			item->setText(mtap_enabled ?
-							  (tr("Controller Port %1%2\n%3").arg(port + 1).arg(s_mtap_slot_names[slot]).arg(display_name)) :
-                              tr("Controller Port %1\n%2").arg(port + 1).arg(display_name));
+			item->setText(mtap_enabled ? (tr("Controller Port %1%2\n%3").arg(port + 1).arg(s_mtap_slot_names[slot]).arg(display_name)) :
+                                         tr("Controller Port %1\n%2").arg(port + 1).arg(display_name));
 			item->setIcon(widget->getIcon());
 			break;
 		}
 	}
 }
+
+void ControllerSettingsDialog::updateListDescription(u32 port, USBDeviceWidget* widget)
+{
+	for (int i = 0; i < m_ui.settingsCategory->count(); i++)
+	{
+		QListWidgetItem* item = m_ui.settingsCategory->item(i);
+		const QVariant data(item->data(Qt::UserRole));
+		if (data.metaType().id() == QMetaType::UInt && data.toUInt() == (MAX_PORTS + port))
+		{
+			const std::string dtype(getStringValue(fmt::format("USB{}", port + 1).c_str(), "Type", "None"));
+			const QString display_name(qApp->translate("USB", USB::GetDeviceName(dtype)));
+
+			item->setText(tr("USB Port %1\n%2").arg(port + 1).arg(display_name));
+			item->setIcon(widget->getIcon());
+			break;
+		}
+	}
+}
+
 void ControllerSettingsDialog::refreshProfileList()
 {
 	const std::vector<std::string> names(PAD::GetInputProfileNames());

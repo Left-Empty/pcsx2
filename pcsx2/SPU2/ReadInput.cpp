@@ -32,8 +32,8 @@
 //
 StereoOut32 V_Core::ReadInput_HiFi()
 {
-	if (psxmode)
-		ConLog("ReadInput_HiFi!!!!!\n");
+	if (SPU2::IsRunningPSXMode() && SPU2::MsgToConsole())
+		SPU2::ConLog("ReadInput_HiFi!!!!!\n");
 
 	u16 ReadIndex = (OutPos * 2) & 0x1FF;
 
@@ -84,11 +84,11 @@ StereoOut32 V_Core::ReadInput_HiFi()
 			{
 				if (IsDevBuild)
 				{
-					FileLog("[%10d] AutoDMA%c block end.\n", Cycles, GetDmaIndexChar());
+					SPU2::FileLog("[%10d] AutoDMA%c block end.\n", Cycles, GetDmaIndexChar());
 					if (InputDataLeft > 0)
 					{
-						if (MsgAutoDMA())
-							ConLog("WARNING: adma buffer didn't finish with a whole block!!\n");
+						if (SPU2::MsgAutoDMA())
+							SPU2::ConLog("WARNING: adma buffer didn't finish with a whole block!!\n");
 					}
 				}
 
@@ -116,12 +116,6 @@ StereoOut32 V_Core::ReadInput()
 		retval = StereoOut32(
 			(s32)(*GetMemPtr(0x2000 + (Index << 10) + ReadIndex)),
 			(s32)(*GetMemPtr(0x2200 + (Index << 10) + ReadIndex)));
-
-		// Not accurate behaviour but shouldn't hurt for now, need to run some tests
-		// to see why Prince of Persia Warrior Within buzzes when going in to the map
-		// since it starts an ADMA of music, then kills ADMA, so it loops on a few ms of data.
-		GetMemPtr(0x2000 + (Index << 10) + ReadIndex)[0] = 0;
-		GetMemPtr(0x2200 + (Index << 10) + ReadIndex)[0] = 0;
 	}
 
 #ifdef PCSX2_DEVBUILD
@@ -165,11 +159,11 @@ StereoOut32 V_Core::ReadInput()
 			{
 				if (IsDevBuild)
 				{
-					FileLog("[%10d] AutoDMA%c block end.\n", Cycles, GetDmaIndexChar());
+					SPU2::FileLog("[%10d] AutoDMA%c block end.\n", Cycles, GetDmaIndexChar());
 					if (InputDataLeft > 0)
 					{
-						if (MsgAutoDMA())
-							ConLog("WARNING: adma buffer didn't finish with a whole block!!\n");
+						if (SPU2::MsgAutoDMA())
+							SPU2::ConLog("WARNING: adma buffer didn't finish with a whole block!!\n");
 					}
 				}
 

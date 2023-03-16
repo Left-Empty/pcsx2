@@ -28,10 +28,6 @@ on:
         required: false
         type: string
         default: ""
-      simd:
-        required: false
-        type: string
-        default: ""
       cheats_url:
         required: false
         type: string
@@ -63,7 +59,6 @@ jobs:
           OS: linux
           GUI_FRAMEWORK: QT
           ARCH: ${{ inputs.platform }}
-          SIMD: ${{ inputs.simd }}
           EVENT_NAME: ${{ github.event_name }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUM: ${{ github.event.pull_request.number }}
@@ -73,17 +68,14 @@ jobs:
       # -- SETUP CCACHE - https://cristianadam.eu/20200113/speeding-up-c-plus-plus-github-actions-using-ccache/
       - name: Prepare ccache timestamp
         id: ccache_cache_timestamp
-        shell: cmake -P {0}
-        run: |
-          string(TIMESTAMP current_date "%Y-%m-%d-%H;%M;%S" UTC)
-          message("::set-output name=timestamp::${current_date}")
+        run: echo "timestamp=$(date -u "+%Y-%m-%d-%H;%M;%S")" >> $GITHUB_OUTPUT
 
       - name: ccache cache files
         uses: actions/cache@v3
         with:
           path: .ccache
-          key: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.simd }} ${{ inputs.detail }} ccache ${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-          restore-keys: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.simd }} ${{ inputs.detail }} ccache
+          key: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.detail }} ccache ${{ steps.ccache_cache_timestamp.outputs.timestamp }}
+          restore-keys: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.detail }} ccache
 
       - name: Install Packages
         env:
@@ -125,8 +117,7 @@ jobs:
         env:
           NAME: ${{ steps.artifact-metadata.outputs.artifact-name }}
         run: |
-                ninja -C build install
-                .github/workflows/scripts/linux/appimage-qt.sh "$(realpath .)" "$HOME/deps" "$NAME"
+                .github/workflows/scripts/linux/appimage-qt.sh "$(realpath .)" "$(realpath ./build)" "$HOME/deps" "$NAME"
                 mkdir -p "$GITHUB_WORKSPACE"/ci-artifacts/
                 mv "${NAME}.AppImage" "$GITHUB_WORKSPACE"/ci-artifacts/
 

@@ -20,9 +20,9 @@
 #include "PrecompiledHeader.h"
 
 #include "Common.h"
-#include "IPU.h"
-#include "yuv2rgb.h"
-#include "mpeg2lib/Mpeg.h"
+#include "IPU/IPU.h"
+#include "IPU/IPU_MultiISA.h"
+#include "IPU/yuv2rgb.h"
 
 // The IPU's colour space conversion conforms to ITU-R Recommendation BT.601 if anyone wants to make a
 // faster or "more accurate" implementation, but this is the precise documented integer method used by
@@ -35,6 +35,8 @@
 #define IPU_GCB_COEFF (-0x32)	// -0.390625
 #define IPU_RCR_COEFF 0xcc	//  1.59375
 #define IPU_BCB_COEFF 0x102	//  2.015625
+
+MULTI_ISA_UNSHARED_START
 
 // conforming implementation for reference, do not optimise
 void yuv2rgb_reference(void)
@@ -149,3 +151,5 @@ __ri void yuv2rgb_sse2()
 		}
 	}
 }
+
+MULTI_ISA_UNSHARED_END

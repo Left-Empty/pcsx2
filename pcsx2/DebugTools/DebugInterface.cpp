@@ -18,6 +18,7 @@
 #include "DebugInterface.h"
 #include "Memory.h"
 #include "R5900.h"
+#include "R5900OpcodeTables.h"
 #include "Debug.h"
 #include "VU.h"
 #include "GS.h" // Required for gsNonMirroredRead()
@@ -26,12 +27,9 @@
 #include "R3000A.h"
 #include "IopMem.h"
 #include "SymbolMap.h"
+#include "VMManager.h"
 
 #include "common/StringUtil.h"
-
-#ifndef PCSX2_CORE
-#include "gui/SysThreads.h"
-#endif
 
 R5900DebugInterface r5900Debug;
 R3000DebugInterface r3000Debug;
@@ -42,14 +40,19 @@ R3000DebugInterface r3000Debug;
 
 enum ReferenceIndexType
 {
-	REF_INDEX_PC = 32,
-	REF_INDEX_HI = 33,
-	REF_INDEX_LO = 34,
-	REF_INDEX_FPU = 0x1000,
-	REF_INDEX_FPU_INT = 0x2000,
-	REF_INDEX_VFPU = 0x4000,
-	REF_INDEX_VFPU_INT = 0x8000,
+	REF_INDEX_PC       = 32,
+	REF_INDEX_HI       = 33,
+	REF_INDEX_LO       = 34,
+	REF_INDEX_OPTARGET = 0x800,
+	REF_INDEX_OPSTORE  = 0x1000,
+	REF_INDEX_OPLOAD   = 0x2000,
+	REF_INDEX_IS_OPSL  = REF_INDEX_OPTARGET | REF_INDEX_OPSTORE | REF_INDEX_OPLOAD,
+	REF_INDEX_FPU      = 0x4000,
+	REF_INDEX_FPU_INT  = 0x8000,
+	REF_INDEX_VFPU     = 0x10000,
+	REF_INDEX_VFPU_INT = 0x20000,
 	REF_INDEX_IS_FLOAT = REF_INDEX_FPU | REF_INDEX_VFPU,
+
 };
 
 
@@ -91,6 +94,23 @@ public:
 			return true;
 		}
 
+		if (strcasecmp(str, "target") == 0)
+		{
+			referenceIndex = REF_INDEX_OPTARGET;
+			return true;
+		}
+
+		if (strcasecmp(str, "load") == 0)
+		{
+			referenceIndex = REF_INDEX_OPLOAD;
+			return true;
+		}
+
+		if (strcasecmp(str, "store") == 0)
+		{
+			referenceIndex = REF_INDEX_OPSTORE;
+			return true;
+		}
 		return false;
 	}
 
@@ -112,6 +132,32 @@ public:
 			return cpu->getHI()._u64[0];
 		if (referenceIndex == REF_INDEX_LO)
 			return cpu->getLO()._u64[0];
+		if (referenceIndex & REF_INDEX_IS_OPSL)
+		{
+			const u32 OP = memRead32(cpu->getPC());
+			const R5900::OPCODE& opcode = R5900::GetInstruction(OP);
+			if (opcode.flags & IS_MEMORY)
+			{
+				// Fetch the address in the base register 
+				u32 target = cpuRegs.GPR.r[(OP >> 21) & 0x1F].UD[0];
+				// Add the offset (lower 16 bits)
+				target += static_cast<u16>(OP);
+
+				if (referenceIndex & REF_INDEX_OPTARGET)
+				{
+					return target;
+				}
+				else if (referenceIndex & REF_INDEX_OPLOAD)
+				{
+					return (opcode.flags & IS_LOAD) ? target : 0;
+				}
+				else if (referenceIndex & REF_INDEX_OPSTORE)
+				{
+					return (opcode.flags & IS_STORE) ? target : 0;
+				}
+			}
+			return 0;
+		}
 		return -1;
 	}
 
@@ -171,42 +217,27 @@ private:
 // DebugInterface
 //
 
+bool DebugInterface::m_pause_on_entry = false;
+
 bool DebugInterface::isAlive()
 {
-#ifndef PCSX2_CORE
-	return GetCoreThread().IsOpen() && g_FrameCount > 0;
-#else
-  return false;
-#endif
+	return VMManager::HasValidVM() && g_FrameCount > 0;
 }
 
 bool DebugInterface::isCpuPaused()
 {
-#ifndef PCSX2_CORE
-	return GetCoreThread().IsPaused();
-#else
-  return false;
-#endif
+	return VMManager::GetState() == VMState::Paused;
 }
 
 void DebugInterface::pauseCpu()
 {
-#ifndef PCSX2_CORE
-	SysCoreThread& core = GetCoreThread();
-	if (!core.IsPaused())
-		core.Pause({}, true);
-#endif
+	VMManager::SetPaused(true);
 }
 
 void DebugInterface::resumeCpu()
 {
-#ifndef PCSX2_CORE
-	SysCoreThread& core = GetCoreThread();
-	if (core.IsPaused())
-		core.Resume();
-#endif
+	VMManager::SetPaused(false);
 }
-
 
 char* DebugInterface::stringFromPointer(u32 p)
 {
@@ -216,28 +247,24 @@ char* DebugInterface::stringFromPointer(u32 p)
 	if (!isValidAddress(p))
 		return NULL;
 
-	try
+	// This is going to blow up if it hits a TLB miss..
+	// Hopefully the checks in isValidAddress() are sufficient.
+	for (u32 i = 0; i < BUFFER_LEN; i++)
 	{
-		for (u32 i = 0; i < BUFFER_LEN; i++)
-		{
-			char c = read8(p + i);
-			buf[i] = c;
+		char c = read8(p + i);
+		buf[i] = c;
 
-			if (c == 0)
-			{
-				return i > 0 ? buf : NULL;
-			}
-			else if (c < 0x20 || c >= 0x7f)
-			{
-				// non printable character
-				return NULL;
-			}
+		if (c == 0)
+		{
+			return i > 0 ? buf : NULL;
+		}
+		else if (c < 0x20 || c >= 0x7f)
+		{
+			// non printable character
+			return NULL;
 		}
 	}
-	catch (Exception::Ps2Generic&)
-	{
-		return NULL;
-	}
+
 	buf[BUFFER_LEN - 1] = 0;
 	buf[BUFFER_LEN - 2] = '~';
 	return buf;
@@ -273,9 +300,26 @@ u32 R5900DebugInterface::read8(u32 address)
 	return memRead8(address);
 }
 
+u32 R5900DebugInterface::read8(u32 address, bool& valid)
+{
+	if (!(valid = isValidAddress(address)))
+		return -1;
+
+	return memRead8(address);
+}
+
+
 u32 R5900DebugInterface::read16(u32 address)
 {
 	if (!isValidAddress(address) || address % 2)
+		return -1;
+
+	return memRead16(address);
+}
+
+u32 R5900DebugInterface::read16(u32 address, bool& valid)
+{
+	if (!(valid = (isValidAddress(address) || address % 2)))
 		return -1;
 
 	return memRead16(address);
@@ -289,14 +333,28 @@ u32 R5900DebugInterface::read32(u32 address)
 	return memRead32(address);
 }
 
+u32 R5900DebugInterface::read32(u32 address, bool& valid)
+{
+	if (!(valid = (isValidAddress(address) || address % 4)))
+		return -1;
+
+	return memRead32(address);
+}
+
 u64 R5900DebugInterface::read64(u32 address)
 {
 	if (!isValidAddress(address) || address % 8)
 		return -1;
 
-	u64 result;
-	memRead64(address, result);
-	return result;
+	return memRead64(address);
+}
+
+u64 R5900DebugInterface::read64(u32 address, bool& valid)
+{
+	if (!(valid = (isValidAddress(address) || address % 8)))
+		return -1;
+
+	return memRead64(address);
 }
 
 u128 R5900DebugInterface::read128(u32 address)
@@ -670,6 +728,12 @@ SymbolMap& R5900DebugInterface::GetSymbolMap() const
 	return R5900SymbolMap;
 }
 
+std::vector<std::unique_ptr<BiosThread>> R5900DebugInterface::GetThreadList() const
+{
+	return getEEThreads();
+}
+
+
 //
 // R3000DebugInterface
 //
@@ -687,9 +751,23 @@ u32 R3000DebugInterface::read8(u32 address)
 	return iopMemRead8(address);
 }
 
+u32 R3000DebugInterface::read8(u32 address, bool& valid)
+{
+	if (!(valid = isValidAddress(address)))
+		return -1;
+	return iopMemRead8(address);
+}
+
 u32 R3000DebugInterface::read16(u32 address)
 {
 	if (!isValidAddress(address))
+		return -1;
+	return iopMemRead16(address);
+}
+
+u32 R3000DebugInterface::read16(u32 address, bool& valid)
+{
+	if (!(valid = isValidAddress(address)))
 		return -1;
 	return iopMemRead16(address);
 }
@@ -701,10 +779,24 @@ u32 R3000DebugInterface::read32(u32 address)
 	return iopMemRead32(address);
 }
 
+u32 R3000DebugInterface::read32(u32 address, bool& valid)
+{
+	if (!(valid = isValidAddress(address)))
+		return -1;
+	return iopMemRead32(address);
+
+}
+
 u64 R3000DebugInterface::read64(u32 address)
 {
 	return 0;
 }
+
+u64 R3000DebugInterface::read64(u32 address, bool& valid)
+{
+	return 0;
+}
+
 
 u128 R3000DebugInterface::read128(u32 address)
 {
@@ -913,4 +1005,9 @@ u32 R3000DebugInterface::getCycles()
 SymbolMap& R3000DebugInterface::GetSymbolMap() const
 {
 	return R3000SymbolMap;
+}
+
+std::vector<std::unique_ptr<BiosThread>> R3000DebugInterface::GetThreadList() const
+{
+	return getIOPThreads();
 }

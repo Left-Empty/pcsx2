@@ -17,9 +17,10 @@
 #include "GSSetupPrimCodeGenerator.all.h"
 #include "GSVertexSW.h"
 
+MULTI_ISA_UNSHARED_IMPL;
 using namespace Xbyak;
 
-#define _rip_local(field) ((m_rip) ? ptr[rip + (char*)&m_local.field] : ptr[_m_local + OFFSETOF(GSScanlineLocalData, field)])
+#define _rip_local(field) (ptr[_m_local + OFFSETOF(GSScanlineLocalData, field)])
 
 #define _64_m_local _64_t0
 
@@ -47,23 +48,21 @@ using namespace Xbyak;
 	#define _rip_local_d_p(x) _rip_local_d(x)
 #endif
 
-GSSetupPrimCodeGenerator2::GSSetupPrimCodeGenerator2(Xbyak::CodeGenerator* base, CPUInfo cpu, void* param, u64 key)
+GSSetupPrimCodeGenerator2::GSSetupPrimCodeGenerator2(Xbyak::CodeGenerator* base, const ProcessorFeatures& cpu, u64 key)
 	: _parent(base, cpu)
-	, m_local(*(GSScanlineLocalData*)param)
-	, m_rip(false), many_regs(false)
+	, many_regs(false)
 	// On x86 arg registers are very temporary but on x64 they aren't, so on x86 some registers overlap
 #ifdef _WIN32
 	, _64_vertex(rcx)
 	, _index(rdx)
 	, _dscan(r8)
-	, _64_t0(r9), t1(r10)
+	, _m_local(r9), t1(r10)
 #else
 	, _64_vertex(rdi)
 	, _index(rsi)
 	, _dscan(rdx)
-	, _64_t0(rcx), t1(r8)
+	, _m_local(rcx), t1(r8)
 #endif
-	, _m_local(chooseLocal(&m_local, _64_m_local))
 {
 	m_sel.key = key;
 
@@ -97,10 +96,7 @@ void GSSetupPrimCodeGenerator2::broadcastss(const XYm& reg, const Address& mem)
 
 void GSSetupPrimCodeGenerator2::Generate()
 {
-	// Technically we just need the delta < 2GB
-	m_rip = (size_t)&m_local < 0x80000000 && (size_t)getCurr() < 0x80000000;
-
-	bool needs_shift = (m_en.z || m_en.f) && m_sel.prim != GS_SPRITE_CLASS || m_en.t || m_en.c && m_sel.iip;
+	bool needs_shift = ((m_en.z || m_en.f) && m_sel.prim != GS_SPRITE_CLASS) || m_en.t || (m_en.c && m_sel.iip);
 	many_regs = isYmm && !m_sel.notest && needs_shift;
 
 #ifdef _WIN64
@@ -115,16 +111,13 @@ void GSSetupPrimCodeGenerator2::Generate()
 	}
 #endif
 
-	if (!m_rip)
-		mov(_64_m_local, (size_t)&m_local);
-
 	if (needs_shift)
 	{
 
 		if (isXmm)
-			mov(rax, (size_t)g_const->m_shift_128b);
+			mov(rax, (size_t)g_const.m_shift_128b);
 		else
-			mov(rax, (size_t)g_const->m_shift_256b);
+			mov(rax, (size_t)g_const.m_shift_256b);
 
 		for (int i = 0; i < (m_sel.notest ? 2 : many_regs ? 9 : 5); i++)
 		{
@@ -269,7 +262,7 @@ void GSSetupPrimCodeGenerator2::Depth_YMM()
 				if (i < 4 || many_regs)
 					vmulps(ymm0, Ymm(4 + i), ymm1);
 				else
-					vmulps(ymm0, ymm1, ptr[g_const->m_shift_256b[i + 1]]);
+					vmulps(ymm0, ymm1, ptr[g_const.m_shift_256b[i + 1]]);
 				cvttps2dq(ymm0, ymm0);
 				pshuflw(ymm0, ymm0, _MM_SHUFFLE(2, 2, 0, 0));
 				pshufhw(ymm0, ymm0, _MM_SHUFFLE(2, 2, 0, 0));
@@ -297,7 +290,7 @@ void GSSetupPrimCodeGenerator2::Depth_YMM()
 				if (i < 4 || many_regs)
 					vmulps(ymm1, Ymm(4 + i), ymm0);
 				else
-					vmulps(ymm1, ymm0, ptr[g_const->m_shift_256b[i + 1]]);
+					vmulps(ymm1, ymm0, ptr[g_const.m_shift_256b[i + 1]]);
 				movaps(_rip_local(d[i].z), ymm1);
 			}
 		}
@@ -372,7 +365,7 @@ void GSSetupPrimCodeGenerator2::Texture()
 			if (i < 4 || many_regs)
 				THREEARG(mulps, xym2, XYm(4 + i), xym1);
 			else
-				vmulps(ymm2, ymm1, ptr[g_const->m_shift_256b[i + 1]]);
+				vmulps(ymm2, ymm1, ptr[g_const.m_shift_256b[i + 1]]);
 
 			if (m_sel.fst)
 			{
@@ -440,7 +433,7 @@ void GSSetupPrimCodeGenerator2::Color()
 			if (i < 4 || many_regs)
 				THREEARG(mulps, xym0, XYm(4 + i), xym2);
 			else
-				vmulps(ymm0, ymm2, ptr[g_const->m_shift_256b[i + 1]]);
+				vmulps(ymm0, ymm2, ptr[g_const.m_shift_256b[i + 1]]);
 			cvttps2dq(xym0, xym0);
 			packssdw(xym0, xym0);
 
@@ -449,7 +442,7 @@ void GSSetupPrimCodeGenerator2::Color()
 			if (i < 4 || many_regs)
 				THREEARG(mulps, xym1, XYm(4 + i), xym3);
 			else
-				vmulps(ymm1, ymm3, ptr[g_const->m_shift_256b[i + 1]]);
+				vmulps(ymm1, ymm3, ptr[g_const.m_shift_256b[i + 1]]);
 			cvttps2dq(xym1, xym1);
 			packssdw(xym1, xym1);
 
@@ -476,7 +469,7 @@ void GSSetupPrimCodeGenerator2::Color()
 			if (i < 4 || many_regs)
 				THREEARG(mulps, xym0, XYm(4 + i), xym2);
 			else
-				vmulps(ymm0, ymm2, ptr[g_const->m_shift_256b[i + 1]]);
+				vmulps(ymm0, ymm2, ptr[g_const.m_shift_256b[i + 1]]);
 			cvttps2dq(xym0, xym0);
 			packssdw(xym0, xym0);
 
@@ -485,7 +478,7 @@ void GSSetupPrimCodeGenerator2::Color()
 			if (i < 4 || many_regs)
 				THREEARG(mulps, xym1, XYm(4 + i), xym3);
 			else
-				vmulps(ymm1, ymm3, ptr[g_const->m_shift_256b[i + 1]]);
+				vmulps(ymm1, ymm3, ptr[g_const.m_shift_256b[i + 1]]);
 			cvttps2dq(xym1, xym1);
 			packssdw(xym1, xym1);
 

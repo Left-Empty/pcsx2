@@ -17,16 +17,10 @@
 
 #define GL_TEX_LEVEL_0 (0)
 #define GL_TEX_LEVEL_1 (1)
-#define GL_FB_DEFAULT  (0)
-#define GL_BUFFER_0    (0)
+#define GL_FB_DEFAULT (0)
+#define GL_BUFFER_0 (0)
 
 #include "glad.h"
-
-namespace GLExtension
-{
-	extern bool Has(const std::string& ext);
-	extern void Set(const std::string& ext, bool v = true);
-} // namespace GLExtension
 
 namespace GLLoader
 {
@@ -35,14 +29,15 @@ namespace GLLoader
 	extern bool vendor_id_amd;
 	extern bool vendor_id_nvidia;
 	extern bool vendor_id_intel;
-	extern bool mesa_driver;
-	extern bool in_replayer;
+	extern bool buggy_pbo;
+	extern bool disable_download_pbo;
 
 	// GL
+	extern bool is_gles;
+	extern bool has_clip_control;
 	extern bool has_dual_source_blend;
 	extern bool found_framebuffer_fetch;
 	extern bool found_geometry_shader;
 	extern bool found_GL_ARB_gpu_shader5;
-	extern bool found_GL_ARB_shader_image_load_store;
-	extern bool found_GL_ARB_clear_texture;
+	extern bool found_GL_ARB_texture_barrier;
 } // namespace GLLoader

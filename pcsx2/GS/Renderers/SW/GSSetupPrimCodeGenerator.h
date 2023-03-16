@@ -16,16 +16,21 @@
 #pragma once
 
 #include "GSScanlineEnvironment.h"
-#include "GS/Renderers/Common/GSFunctionMap.h"
 #include "GS/GSUtil.h"
+#include "GS/MultiISA.h"
 
-class GSSetupPrimCodeGenerator : public GSCodeGenerator
+#ifdef _WIN32
+#include "common/RedtapeWindows.h"
+#endif
+#include <xbyak/xbyak.h>
+
+MULTI_ISA_UNSHARED_START
+
+class GSSetupPrimCodeGenerator : public Xbyak::CodeGenerator
 {
 	void operator=(const GSSetupPrimCodeGenerator&);
 
 	GSScanlineSelector m_sel;
-	GSScanlineLocalData& m_local;
-	bool m_rip;
 
 	struct
 	{
@@ -33,5 +38,7 @@ class GSSetupPrimCodeGenerator : public GSCodeGenerator
 	} m_en;
 
 public:
-	GSSetupPrimCodeGenerator(void* param, u64 key, void* code, size_t maxsize);
+	GSSetupPrimCodeGenerator(u64 key, void* code, size_t maxsize);
 };
+
+MULTI_ISA_UNSHARED_END

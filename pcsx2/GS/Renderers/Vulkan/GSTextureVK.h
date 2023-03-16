@@ -15,20 +15,13 @@
 
 #pragma once
 
-#include "GS.h"
+#include "GS/GS.h"
 #include "GS/Renderers/Common/GSTexture.h"
 #include "common/Vulkan/Context.h"
 #include "common/Vulkan/Texture.h"
 
 class GSTextureVK final : public GSTexture
 {
-public:
-	union alignas(16) ClearValue
-	{
-		float color[4];
-		float depth;
-	};
-
 public:
 	GSTextureVK(Type type, Format format, Vulkan::Texture texture);
 	~GSTextureVK() override;
@@ -40,8 +33,6 @@ public:
 	__fi VkImage GetImage() const { return m_texture.GetImage(); }
 	__fi VkImageView GetView() const { return m_texture.GetView(); }
 	__fi VkImageLayout GetLayout() const { return m_texture.GetLayout(); }
-	__fi GSVector4 GetClearColor() const { return GSVector4::load<true>(m_clear_value.color); }
-	__fi float GetClearDepth() const { return m_clear_value.depth; }
 
 	void* GetNativeHandle() const override;
 
@@ -60,17 +51,6 @@ public:
 
 	VkFramebuffer GetLinkedFramebuffer(GSTextureVK* depth_texture, bool feedback_loop);
 
-	__fi void SetClearColor(const GSVector4& color)
-	{
-		m_state = State::Cleared;
-		GSVector4::store<true>(m_clear_value.color, color);
-	}
-	__fi void SetClearDepth(float depth)
-	{
-		m_state = State::Cleared;
-		m_clear_value.depth = depth;
-	}
-
 	// Call when the texture is bound to the pipeline, or read from in a copy.
 	__fi void SetUsedThisCommandBuffer()
 	{
@@ -88,12 +68,36 @@ private:
 	// When this matches the current fence counter, the texture was used this command buffer.
 	u64 m_use_fence_counter = 0;
 
-	ClearValue m_clear_value = {};
-
 	GSVector4i m_map_area = GSVector4i::zero();
 	u32 m_map_level = UINT32_MAX;
 
 	// linked framebuffer is combined with depth texture
 	// list of color textures this depth texture is linked to or vice versa
 	std::vector<std::tuple<GSTextureVK*, VkFramebuffer, bool>> m_framebuffers;
+};
+
+class GSDownloadTextureVK final : public GSDownloadTexture
+{
+public:
+	~GSDownloadTextureVK() override;
+
+	static std::unique_ptr<GSDownloadTextureVK> Create(u32 width, u32 height, GSTexture::Format format);
+
+	void CopyFromTexture(const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch) override;
+
+	bool Map(const GSVector4i& read_rc) override;
+	void Unmap() override;
+
+	void Flush() override;
+
+private:
+	GSDownloadTextureVK(u32 width, u32 height, GSTexture::Format format);
+
+	VmaAllocation m_allocation = VK_NULL_HANDLE;
+	VkBuffer m_buffer = VK_NULL_HANDLE;
+
+	u64 m_copy_fence_counter = 0;
+	u32 m_buffer_size = 0;
+
+	bool m_needs_cache_invalidate = false;
 };

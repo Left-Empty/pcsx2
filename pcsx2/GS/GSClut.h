@@ -21,8 +21,9 @@
 #include "GSAlignedClass.h"
 
 class GSLocalMemory;
+class GSTexture;
 
-class alignas(32) GSClut : public GSAlignedClass<32>
+class alignas(32) GSClut final : public GSAlignedClass<32>
 {
 	static const GSVector4i m_bm;
 	static const GSVector4i m_gm;
@@ -39,7 +40,8 @@ class alignas(32) GSClut : public GSAlignedClass<32>
 	{
 		GIFRegTEX0 TEX0;
 		GIFRegTEXCLUT TEXCLUT;
-		bool dirty;
+		u8 dirty;
+		u64 next_tex0;
 		bool IsDirty(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	} m_write;
 
@@ -53,6 +55,10 @@ class alignas(32) GSClut : public GSAlignedClass<32>
 		bool IsDirty(const GIFRegTEX0& TEX0);
 		bool IsDirty(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA);
 	} m_read;
+
+	GSTexture* m_gpu_clut4 = nullptr;
+	GSTexture* m_gpu_clut8 = nullptr;
+	GSTexture* m_current_gpu_clut = nullptr;
 
 	typedef void (GSClut::*writeCLUT)(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 
@@ -98,11 +104,16 @@ private:
 
 public:
 	GSClut(GSLocalMemory* mem);
-	virtual ~GSClut();
+	~GSClut();
 
-	void Invalidate();
-	void Invalidate(u32 block);
-	void InvalidateRange(u32 start_block, u32 end_block);
+	__fi GSTexture* GetGPUTexture() const { return m_current_gpu_clut; }
+
+	bool InvalidateRange(u32 start_block, u32 end_block, bool is_draw = false);
+	u8 IsInvalid();
+	void ClearDrawInvalidity();
+	u32 GetCLUTCBP();
+	u32 GetCLUTCPSM();
+	void SetNextCLUTTEX0(u64 CBP);
 	bool WriteTest(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	void Write(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	//void Read(const GIFRegTEX0& TEX0);
